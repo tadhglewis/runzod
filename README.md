@@ -57,7 +57,7 @@ npx jscodeshift -t node_modules/runzod/dist/transform.js --extensions=ts,tsx ./s
 
 | Runtypes | Zod |
 |----------|-----|
-| `import { String } from 'runtypes'` | `import * as z from 'zod'` |
+| `import { String } from 'runtypes'` | `import { z } from 'zod'` |
 | `String` | `z.string()` |
 | `Number` | `z.number()` |
 | `Boolean` | `z.boolean()` |
@@ -101,7 +101,7 @@ if (User.guard(data)) {
 }
 
 // After (zod)
-import * as z from 'zod';
+import { z } from 'zod';
 
 const User = z.object({
   name: z.string(),
@@ -128,7 +128,7 @@ const UserId = String.withBrand("UserId");
 type UserId = Static<typeof UserId>;
 
 // After (zod)
-import * as z from 'zod';
+import { z } from 'zod';
 
 const UserId = z.string().brand("UserId");
 type UserId = z.infer<typeof UserId>;

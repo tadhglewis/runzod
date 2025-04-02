@@ -16,8 +16,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:codemod": "jscodeshift -t src/transform.ts --parser=ts --dry --print --run-in-band __testfixtures__/basic.input.ts",
-    "prepare": "npm run build",
-    "start": "node dist/index.js"
+    "prepare": "pnpm build",
+    "start": "node dist/index.js",
+    "version": "changeset version",
+    "release": "pnpm build && changeset publish",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "codemod",
@@ -27,15 +30,21 @@
     "typescript",
     "jscodeshift"
   ],
-  "author": "",
+  "author": "Tadhg Lewis",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tadhglewis/runzod"
+  },
   "engines": {
     "node": ">=12.0.0"
   },
+  "packageManager": "pnpm@8.x",
   "dependencies": {
     "jscodeshift": "^17.3.0"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.28.1",
     "@types/jscodeshift": "^17.3.0",
     "glob": "^11.0.1",
     "runtypes": "^7.0.4",

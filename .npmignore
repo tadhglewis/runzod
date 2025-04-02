@@ -1,0 +1,19 @@
+# Source code
+/src
+
+# Tests
+/__testfixtures__
+/src/**/*.test.ts
+/src/**/*.spec.ts
+
+# Config files
+/tsconfig.json
+/vitest.config.ts
+/.github
+/.changeset
+
+# Development files
+/node_modules
+/.vscode
+/.idea
+/.git

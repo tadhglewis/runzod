@@ -303,14 +303,15 @@ describe('specific transformations', () => {
     expect(output).not.toContain('z.literal(');
   });
   
-  test('preserves JavaScript Boolean() function calls', () => {
+  test('preserves JavaScript built-in function calls', () => {
     const source = `
-      import { String, Boolean } from "runtypes";
+      import { String, Boolean, Number } from "runtypes";
       
       // Define a schema
       const User = {
         name: String,
-        active: Boolean
+        active: Boolean,
+        age: Number
       };
       
       // JavaScript Boolean function in conditional
@@ -319,6 +320,11 @@ describe('specific transformations', () => {
           return true;
         }
         return false;
+      }
+      
+      // JavaScript String function in template literals
+      function formatUser(user: any) {
+        return \`User \${String(user.id)}: \${user.name} is \${Number(user.age)} years old\`;
       }
     `;
     
@@ -331,9 +337,19 @@ describe('specific transformations', () => {
     // Normalize formatting
     output = output.replace(/\s+/g, ' ').trim();
     
-    // Check that Boolean type was converted but Boolean() function call was preserved
+    // Check that types were converted but function calls were preserved
     expect(output).toContain('active: z.boolean()');
+    expect(output).toContain('age: z.number()');
+    expect(output).toContain('name: z.string()');
+    
+    // Check that JavaScript built-in functions are preserved
     expect(output).toContain('if (data && Boolean(data.id))');
-    expect(output).not.toContain('if (data && z.boolean()(data.id))');
+    expect(output).not.toContain('z.boolean()(data.id)');
+    
+    expect(output).toContain('${String(user.id)}');
+    expect(output).not.toContain('${z.string()(user.id)}');
+    
+    expect(output).toContain('${Number(user.age)}');
+    expect(output).not.toContain('${z.number()(user.age)}');
   });
 });

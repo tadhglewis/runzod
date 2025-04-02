@@ -125,18 +125,18 @@ function transformer(file: FileInfo, api: API, options: Options) {
       j(path).remove();
     });
 
-  // First, create a separate transformation to handle JavaScript Boolean() function calls
-  // To avoid them being treated as runtypes Boolean 
+  // First, create a separate transformation to handle JavaScript builtin function calls
+  // To avoid them being treated as runtypes types
   root
     .find(j.CallExpression)
     .filter((path) => {
       return (
         j.Identifier.check(path.node.callee) &&
-        path.node.callee.name === "Boolean"
+        ["Boolean", "String", "Number"].includes(path.node.callee.name)
       );
     })
     .forEach((path) => {
-      // Add a property to mark this Boolean as a JavaScript function
+      // Add a property to mark this as a JavaScript function
       (path.node.callee as any).__jsBuiltin = true;
     });
     
@@ -165,13 +165,13 @@ function transformer(file: FileInfo, api: API, options: Options) {
         return;
       }
 
-      // Don't replace callee part of call expressions like Boolean()
+      // Don't replace callee part of call expressions like Boolean(), String(), Number()
       if (
         j.CallExpression.check(path.parent.node) &&
         path.parent.node.callee === path.node &&
-        path.node.name === "Boolean"
+        ["Boolean", "String", "Number"].includes(path.node.name)
       ) {
-        // Skip JS Boolean function calls
+        // Skip JS built-in function calls
         return;
       }
 
@@ -888,11 +888,10 @@ function transformer(file: FileInfo, api: API, options: Options) {
     );
   }
   
-  // Fix any mistakenly transformed JavaScript Boolean() function calls
-  transformedSource = transformedSource.replace(
-    /z\.boolean\(\)\((.*?)\)/g,
-    'Boolean($1)'
-  );
+  // Fix any mistakenly transformed JavaScript built-in function calls
+  transformedSource = transformedSource.replace(/z\.boolean\(\)\((.*?)\)/g, 'Boolean($1)');
+  transformedSource = transformedSource.replace(/z\.string\(\)\((.*?)\)/g, 'String($1)');
+  transformedSource = transformedSource.replace(/z\.number\(\)\((.*?)\)/g, 'Number($1)');
 
   return transformedSource;
 }

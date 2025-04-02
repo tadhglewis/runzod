@@ -6,6 +6,59 @@ module.exports = function transform(file, api) {
   root
     .find(j.Literal, { value: 'runtypes' })
     .replaceWith(j.stringLiteral('zod'));
+    
+  // Handle namespace imports (import * as t from 'runtypes')
+  root
+    .find(j.ImportNamespaceSpecifier)
+    .forEach(path => {
+      // Find the parent import declaration
+      const importDecl = j(path).closest(j.ImportDeclaration);
+      
+      if (importDecl.length && 
+          importDecl.get().node.source.value === 'zod') {
+        // Change the namespace name to 'z'
+        const oldNamespace = path.value.local.name;
+        
+        if (oldNamespace !== 'z') {
+          // Create a map to convert t.Record -> z.object, etc.
+          const typeMap = {
+            'String': 'string',
+            'Number': 'number',
+            'Boolean': 'boolean',
+            'Record': 'object',
+            'Dictionary': 'record',
+            'Union': 'union',
+            'Intersect': 'intersection',
+            'Array': 'array', 
+            'Tuple': 'tuple',
+            'Literal': 'literal'
+          };
+        
+          // Find all usage of the namespace
+          root
+            .find(j.MemberExpression, {
+              object: {
+                type: 'Identifier',
+                name: oldNamespace
+              }
+            })
+            .forEach(memberPath => {
+              // Change namespace name
+              memberPath.value.object.name = 'z';
+              
+              // Convert method names
+              if (memberPath.value.property && 
+                  memberPath.value.property.type === 'Identifier' &&
+                  typeMap[memberPath.value.property.name]) {
+                memberPath.value.property.name = typeMap[memberPath.value.property.name];
+              }
+            });
+            
+          // Rename the import specifier to 'z'
+          path.value.local.name = 'z';
+        }
+      }
+    });
 
   // Add z namespace import
   const hasImports = root.find(j.Literal, { value: 'zod' }).length > 0;

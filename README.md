@@ -35,6 +35,7 @@ runzod src/types.ts src/validation.ts
 | Runtypes | Zod |
 |----------|-----|
 | `import { String } from 'runtypes'` | `import { string } from 'zod'` |
+| `import * as t from 'runtypes'` | `import * as z from 'zod'` |
 | `String()` | `z.string()` |
 | `Number()` | `z.number()` |
 | `Boolean()` | `z.boolean()` |
@@ -49,9 +50,11 @@ runzod src/types.ts src/validation.ts
 | `Type.validate(data)` | `Type.safeParse(data)` |
 | `result.failure` | `!result.success` |
 
-## Example
+## Examples
 
-### Before (runtypes)
+### Named imports
+
+#### Before (runtypes)
 
 ```typescript
 import { String, Number, Array, Record, Optional } from 'runtypes';
@@ -76,7 +79,7 @@ function validatePerson(data: unknown) {
 }
 ```
 
-### After (zod)
+#### After (zod)
 
 ```typescript
 import { string, number, array, object, optional } from 'zod';
@@ -87,6 +90,64 @@ const Person = z.object({
   age: z.number(),
   hobbies: z.array(z.string()),
   address: z.string().optional()
+});
+
+function validatePerson(data: unknown) {
+  const result = Person.safeParse(data);
+  
+  if (result.success) {
+    return result.value;
+  }
+  
+  if (!result.success) {
+    throw new Error(result.message);
+  }
+}
+```
+
+### Namespace imports
+
+#### Before (runtypes)
+
+```typescript
+import * as t from 'runtypes';
+
+const Person = t.Record({
+  name: t.String(),
+  age: t.Number(),
+  hobbies: t.Array(t.String()),
+  address: t.Record({
+    street: t.String(),
+    city: t.String()
+  })
+});
+
+function validatePerson(data: unknown) {
+  const result = Person.validate(data);
+  
+  if (result.success) {
+    return result.value;
+  }
+  
+  if (result.failure) {
+    throw new Error(result.message);
+  }
+}
+```
+
+#### After (zod)
+
+```typescript
+import * as z from 'zod';
+
+const Person = z.object({
+  name: z.string(),
+  age: z.number(),
+  hobbies: z.array(z.string()),
+  address: z.object({
+    street: z.string(),
+    city: z.string()
+  })
 });
 
 function validatePerson(data: unknown) {

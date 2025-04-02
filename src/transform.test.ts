@@ -87,7 +87,7 @@ describe('runtypes to zod transform', () => {
 describe('specific transformations', () => {
   test('transforms runtypes imports to zod', () => {
     const source = `import { String, Number } from "runtypes";`;
-    const expected = `import * as z from "zod";`;
+    const expected = `import { z } from "zod";`;
     
     let output = transform(
       { source, path: 'test.ts' },
@@ -113,7 +113,7 @@ describe('specific transformations', () => {
     `;
     
     const expected = `
-      import * as z from "zod";
+      import { z } from "zod";
       const User = z.object({ name: z.string() });
       type User = z.infer<typeof User>;
     `;
@@ -145,7 +145,7 @@ describe('specific transformations', () => {
     `;
     
     const expected = `
-      import * as z from "zod";
+      import { z } from "zod";
       const Email = z.string().refine(email => /\\S+@\\S+\\.\\S+/.test(email), "Invalid email");
     `;
     
@@ -183,7 +183,7 @@ describe('specific transformations', () => {
     `;
     
     const expected = `
-      import * as z from "zod";
+      import { z } from "zod";
       const User = z.object({ name: z.string() });
       
       function process(data: unknown) {
@@ -249,7 +249,7 @@ describe('specific transformations', () => {
       .replace(/if\s*\((.*?)\.safeParse\((.*?)\)\)/g, 'if ($1.safeParse($2).success)');
     
     // Looser assertions that don't rely on exact formatting
-    expect(output).toContain('import * as z from "zod"');
+    expect(output).toContain('import { z } from "zod"');
     expect(output).toContain('z.object');
     expect(output).toContain('z.string()');
     expect(output).toContain('z.number()');

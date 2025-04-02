@@ -128,13 +128,13 @@ function transformer(file: FileInfo, api: API, options: Options) {
   // First, create a separate transformation to handle JavaScript builtin function calls
   // To avoid them being treated as runtypes types
   
-  // Mark any Boolean, String, Number as JavaScript built-ins when used as function calls
+  // Mark any Boolean, String, Number, Symbol as JavaScript built-ins when used as function calls
   root
     .find(j.CallExpression)
     .filter((path) => {
       return (
         j.Identifier.check(path.node.callee) &&
-        ["Boolean", "String", "Number"].includes(path.node.callee.name)
+        ["Boolean", "String", "Number", "Symbol"].includes(path.node.callee.name)
       );
     })
     .forEach((path) => {
@@ -142,13 +142,13 @@ function transformer(file: FileInfo, api: API, options: Options) {
       (path.node.callee as any).__jsBuiltin = true;
     });
     
-  // Also mark any Boolean, String, Number as JavaScript built-ins when used as arguments
+  // Also mark any Boolean, String, Number, Symbol as JavaScript built-ins when used as arguments
   // This handles cases like array.filter(Boolean)
   root
     .find(j.Identifier)
     .filter((path) => {
       return (
-        ["Boolean", "String", "Number"].includes(path.node.name) &&
+        ["Boolean", "String", "Number", "Symbol"].includes(path.node.name) &&
         // Used as function argument
         ((j.CallExpression.check(path.parent.node) && 
           path.parent.node.arguments.includes(path.node)) ||
@@ -861,7 +861,7 @@ function transformer(file: FileInfo, api: API, options: Options) {
   // Add zod import if needed
   if (needsZodImport) {
     const zodImport = j.importDeclaration(
-      [j.importNamespaceSpecifier(j.identifier("z"))],
+      [j.importSpecifier(j.identifier("z"))],
       j.literal("zod")
     );
 

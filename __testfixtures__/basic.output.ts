@@ -1,4 +1,4 @@
-import * as z from "zod";
+import { z } from "zod";
 
 // Basic schema definitions
 const User = z.object({

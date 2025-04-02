@@ -1,4 +1,4 @@
-import * as z from "zod";
+import { z } from "zod";
 
 // Define some base types
 const Id = z.string().brand("Id");

@@ -1,4 +1,4 @@
-import * as z from "zod";
+import { z } from "zod";
 
 // Branded types example
 const UserId = z.string().brand("UserId");

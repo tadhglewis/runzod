@@ -1,44 +1,40 @@
-import {
-  String,
-  Number,
-  Boolean,
-  Array,
-  Tuple,
-  Object,
-  Union,
-  Literal,
-  Optional,
-  Record,
-} from "runtypes";
+import { String, Number, Boolean, Object, Array, Union, Literal, type Static } from "runtypes";
 
-// Basic primitive types
-const StringType = String;
-const NumberType = Number;
-const BooleanType = Boolean;
-
-// Complex types
-const ArrayType = Array(String);
-const TupleType = Tuple(String, Number, Boolean);
-const ObjectType = Object({
+// Basic schema definitions
+const User = Object({
+  id: String,
   name: String,
   age: Number,
   isActive: Boolean,
   tags: Array(String),
+  role: Union(
+    Literal("admin"),
+    Literal("user"),
+    Literal("guest")
+  )
 });
 
-// Union and Literal types
-const LiteralType = Literal("hello");
-const UnionType = Union(String, Number, Literal(42));
+type User = Static<typeof User>;
 
-// Optional and constrained types
-const OptionalType = Object({
-  name: String,
-  age: Optional(Number),
-});
+// Using the schemas
+function validateUser(data: unknown) {
+  if (User.guard(data)) {
+    // data is now typed as User
+    console.log(`User ${data.name} is ${data.age} years old`);
+    return true;
+  }
+  return false;
+}
 
-const ConstrainedNumber = Number.withConstraint(
-  (n) => n > 0 || "Must be positive"
-);
+function processUser(rawData: unknown) {
+  try {
+    const user = User.check(rawData);
+    console.log(`Validated user: ${user.name}`);
+    return user;
+  } catch (error) {
+    console.error("Validation failed:", error);
+    return null;
+  }
+}
 
-// Dictionary type
-const DictionaryType = Record(String, Number);
+export { User, validateUser, processUser };

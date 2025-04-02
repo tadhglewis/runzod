@@ -1,12 +1,13 @@
-# RunZod
+# runzod
 
-A codemod to migrate from [runtypes](https://github.com/runtypes/runtypes) to [zod](https://github.com/colinhacks/zod).
+A codemod to migrate from [runtypes](https://github.com/pelotom/runtypes) to [zod](https://github.com/colinhacks/zod).
 
 ## Features
 
 - Transforms imports/requires from runtypes to zod
 - Converts type definitions to zod schemas
-- Handles both direct imports and namespace imports
+- Updates validation methods (check → parse, guard → safeParse)
+- Converts Static<typeof X> to z.infer<typeof X>
 - Works with TypeScript files
 - Preserves code style and formatting
 
@@ -23,11 +24,30 @@ npx runzod <path-to-your-code>
 ## Usage
 
 ```bash
-# Run on a directory
-runzod src/
+runzod <directory> [options]
+```
 
-# Run on specific files
-runzod src/types.ts src/validation.ts
+### Options
+
+- `--dry`: Do not write to files, just show what would be changed
+- `--extensions`: File extensions to process (default: ts,tsx)
+- `--help, -h`: Show help message
+- `--verbose, -v`: Show more information during processing
+
+### Examples
+
+```bash
+# Transform all TypeScript files in the src directory
+runzod ./src
+
+# Dry run to see what would be changed
+runzod ./src --dry
+
+# Transform only specific file extensions
+runzod ./src --extensions ts,tsx
+
+# Show verbose output
+runzod ./src -v
 
 # Using jscodeshift directly
 npx jscodeshift -t node_modules/runzod/dist/transform.js --extensions=ts,tsx ./src/myfile.ts
@@ -37,128 +57,104 @@ npx jscodeshift -t node_modules/runzod/dist/transform.js --extensions=ts,tsx ./s
 
 | Runtypes | Zod |
 |----------|-----|
-| `import { String } from 'runtypes'` | `import z from 'zod'` |
-| `import * as RT from 'runtypes'` | `import z from 'zod'` |
+| `import { String } from 'runtypes'` | `import * as z from 'zod'` |
 | `String` | `z.string()` |
 | `Number` | `z.number()` |
 | `Boolean` | `z.boolean()` |
+| `BigInt` | `z.bigint()` |
 | `Undefined` | `z.undefined()` |
 | `Null` | `z.null()` |
 | `Array(String)` | `z.array(z.string())` |
 | `Tuple(String, Number)` | `z.tuple([z.string(), z.number()])` |
 | `Object({...})` | `z.object({...})` |
 | `Record(String, Number)` | `z.record(z.string(), z.number())` |
-| `Dictionary(String, Number)` | `z.record(z.string(), z.number())` |
-| `Union(String, Number)` | `z.union([z.string(), z.number()])` |
+| `Union(A, B, C)` | `z.union([A, B, C])` |
+| `Intersect(A, B)` | `z.intersection([A, B])` |
 | `Literal(x)` | `z.literal(x)` |
 | `Optional(String)` | `z.string().optional()` |
-| `Number.withConstraint(...)` | `z.number().refine(...)` |
+| `String.optional()` | `z.string().optional()` |
+| `String.withConstraint(...)` | `z.string().refine(...)` |
+| `String.withBrand("Brand")` | `z.string().brand("Brand")` |
+| `Type.check(data)` | `Type.parse(data)` |
+| `Type.guard(data)` | `Type.safeParse(data)` |
+| `Static<typeof Type>` | `z.infer<typeof Type>` |
 
 ## Examples
 
-### Named imports
-
-#### Before (runtypes)
+### Basic Usage
 
 ```typescript
-import { String, Number, Boolean, Array, Object, Optional } from 'runtypes';
+// Before (runtypes)
+import { String, Number, Boolean, Array, Object, type Static } from 'runtypes';
 
-const Person = Object({
+const User = Object({
   name: String,
   age: Number,
   isActive: Boolean,
-  hobbies: Array(String),
-  address: Optional(String)
+  tags: Array(String)
 });
 
-function validatePerson(data: unknown) {
-  const result = Person.validate(data);
-  
-  if (result.success) {
-    return result.value;
-  } else {
-    throw new Error(result.message);
-  }
+type User = Static<typeof User>;
+
+if (User.guard(data)) {
+  console.log(`User ${data.name} is ${data.age} years old`);
 }
-```
 
-#### After (zod)
+// After (zod)
+import * as z from 'zod';
 
-```typescript
-import z from 'zod';
-
-const Person = z.object({
+const User = z.object({
   name: z.string(),
   age: z.number(),
   isActive: z.boolean(),
-  hobbies: z.array(z.string()),
-  address: z.string().optional()
+  tags: z.array(z.string())
 });
 
-function validatePerson(data: unknown) {
-  const result = Person.validate(data);
-  
-  if (result.success) {
-    return result.value;
-  } else {
-    throw new Error(result.message);
-  }
+type User = z.infer<typeof User>;
+
+const result = User.safeParse(data);
+if (result.success) {
+  console.log(`User ${result.data.name} is ${result.data.age} years old`);
 }
 ```
 
-### Namespace imports
-
-#### Before (runtypes)
+### Branded Types
 
 ```typescript
-import * as RT from 'runtypes';
+// Before (runtypes)
+import { String, withBrand, type Static } from 'runtypes';
 
-const Person = RT.Object({
-  name: RT.String,
-  age: RT.Number,
-  hobbies: RT.Array(RT.String),
-  address: RT.Object({
-    street: RT.String,
-    city: RT.String
-  })
-});
+const UserId = String.withBrand("UserId");
+type UserId = Static<typeof UserId>;
 
-function validatePerson(data: unknown) {
-  const result = Person.validate(data);
-  
-  if (result.success) {
-    return result.value;
-  } else {
-    throw new Error(result.message);
-  }
-}
+// After (zod)
+import * as z from 'zod';
+
+const UserId = z.string().brand("UserId");
+type UserId = z.infer<typeof UserId>;
 ```
 
-#### After (zod)
+## Limitations
 
-```typescript
-import z from 'zod';
+The codemod handles most common cases, but there are some limitations:
 
-const Person = z.object({
-  name: z.string(),
-  age: z.number(),
-  hobbies: z.array(z.string()),
-  address: z.object({
-    street: z.string(),
-    city: z.string()
-  })
-});
+- Complex constraints may need manual adjustment
+- The `match` pattern from runtypes needs manual conversion to zod patterns
+- Recursive types may require adjustments
+- Some method chaining might require manual fixes
+- Branded type handling might require additional changes
 
-function validatePerson(data: unknown) {
-  const result = Person.validate(data);
-  
-  if (result.success) {
-    return result.value;
-  } else {
-    throw new Error(result.message);
-  }
-}
-```
+## Post-Migration Steps
+
+After running the codemod:
+
+1. Add "zod" to your dependencies if it's not already there
+2. Review the transformed files manually
+3. Update validation logic based on zod's patterns:
+   - `runtype.guard(data)` becomes `schema.safeParse(data)` 
+     (but you'll need to access `result.data` when success is true)
+   - Error handling differs between libraries
+4. Run your tests to ensure everything still works
 
 ## Development
 
@@ -178,13 +174,6 @@ npm run test:watch
 # Test on example files
 npm run test:codemod
 ```
-
-## Notes
-
-- The codemod transforms the schema definitions but doesn't change validation method calls
-- You may need to update your validation logic after transformation:
-  - `runtype.validate(data)` → `schema.safeParse(data)`
-  - Error handling will differ between the libraries
 
 ## License
 

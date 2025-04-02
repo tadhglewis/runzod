@@ -1,110 +1,93 @@
 #!/usr/bin/env node
 
-import { run } from 'jscodeshift/src/Runner';
-import { existsSync } from 'fs';
 import path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { glob } from 'glob';
 
-// Type for supported parsers
-type Parser = 'ts' | 'tsx' | 'babel' | 'babylon' | 'flow' | 'css' | 'less' | 'scss' | 'json' | 'json5' | 'graphql';
+const execAsync = promisify(exec);
 
-// Parse command line options
-const args = process.argv.slice(2);
-
-if (args.length === 0) {
-  console.error('Error: No paths provided');
-  showHelp();
-  process.exit(1);
-}
-
-// Help flag
-if (args.includes('--help') || args.includes('-h')) {
-  showHelp();
-  process.exit(0);
-}
-
-// Process command line options
-const paths = args.filter(arg => !arg.startsWith('-'));
-const options = {
-  dry: args.includes('--dry'),
-  print: args.includes('--print'),
-  verbose: args.includes('--verbose') || args.includes('-v'),
-  parser: getParserOption(args) || 'ts',
-};
-
-// Transform file path
-const transformPath = path.resolve(__dirname, 'transform.js');
-
-if (!existsSync(transformPath)) {
-  console.error(`Error: Transform file not found at ${transformPath}`);
-  process.exit(1);
-}
-
-// Run the transformation
-run(transformPath, paths, options)
-  .then(results => {
-    if (options.verbose) {
-      const stats = results as unknown as { 
-        stats: { [messageName: string]: number };
-        timeElapsed: string;
-        error: number;
-        ok: number;
-        nochange: number;
-        skip: number;
-      };
-      
-      console.log(`Successfully processed ${stats.ok} files`);
-      if (stats.error > 0) {
-        console.error(`Failed to process ${stats.error} files`);
-      }
-    }
+async function run() {
+  try {
+    // Get command line arguments
+    const args = process.argv.slice(2);
     
-    // Check if there were errors
-    const hasErrors = (results as any).error > 0;
-    process.exit(hasErrors ? 1 : 0);
-  })
-  .catch(error => {
-    console.error('Error during transformation:', error);
-    process.exit(1);
-  });
-
-/**
- * Extract parser option from command line args
- */
-function getParserOption(args: string[]): Parser | null {
-  const parserIndex = args.findIndex(arg => arg === '--parser' || arg === '-p');
-  if (parserIndex >= 0 && parserIndex < args.length - 1) {
-    const parser = args[parserIndex + 1];
-    if (['ts', 'tsx', 'babel', 'babylon', 'flow', 'css', 'less', 'scss', 'json', 'json5', 'graphql'].includes(parser)) {
-      return parser as Parser;
+    if (args.length === 0) {
+      console.error('Please provide a path to the directory containing files to transform');
+      process.exit(1);
     }
-  }
-  return null;
-}
 
-/**
- * Show help information
- */
-function showHelp() {
-  console.log(`
-runzod - A codemod to migrate from runtypes to zod
+    if (args[0] === '--help' || args[0] === '-h') {
+      console.log(`
+runzod - Migrate from runtypes to zod
 
 Usage:
-  npx runzod [options] <paths...>
+  runzod <directory> [options]
 
 Options:
-  --dry            Dry run (no changes are made to files)
-  --print          Print transformed files to stdout
-  --parser, -p     The parser to use (default: ts)
-  --verbose, -v    Show more information
-  --help, -h       Show this help message
+  --dry           Do not write to files, just show what would be changed
+  --extensions    File extensions to process (default: ts,tsx)
+  --help, -h      Show this help message
+  --verbose, -v   Show more information during processing
+      `);
+      process.exit(0);
+    }
 
-Examples:
-  npx runzod src                        # Transform all files in src directory
-  npx runzod --dry src/**/*.ts          # Dry run on all TypeScript files in src
-  npx runzod --print file.ts            # Print transformed file to stdout
-
-Description:
-  This codemod converts runtypes validation schemas to zod schemas.
-  It handles both pre and post v7 runtypes syntax.
-  `);
+    const targetPath = args[0];
+    const isDryRun = args.includes('--dry');
+    const verbose = args.includes('--verbose') || args.includes('-v');
+    
+    // Find extensions option
+    const extIndex = args.findIndex(arg => arg === '--extensions');
+    const extensions = extIndex !== -1 && args[extIndex + 1] 
+      ? args[extIndex + 1].split(',') 
+      : ['ts', 'tsx'];
+    
+    const extensionPattern = extensions.map(ext => `**/*.${ext}`).join(',');
+    
+    // Find all TypeScript files
+    const files = await glob(`${targetPath}/${extensionPattern}`);
+    
+    if (files.length === 0) {
+      console.error(`No files found in ${targetPath} with extensions: ${extensions.join(', ')}`);
+      process.exit(1);
+    }
+    
+    console.log(`Found ${files.length} files to process`);
+    
+    // Build the jscodeshift command
+    const jscodeshiftBin = path.resolve(__dirname, '../node_modules/.bin/jscodeshift');
+    const transformPath = path.resolve(__dirname, './transform.js');
+    
+    const dryRunFlag = isDryRun ? '--dry' : '';
+    const printFlag = isDryRun ? '--print' : '';
+    
+    const command = `${jscodeshiftBin} -t ${transformPath} ${dryRunFlag} ${printFlag} --parser=ts --extensions=${extensions.join(',')} ${targetPath}`;
+    
+    if (verbose) {
+      console.log(`Executing: ${command}`);
+    }
+    
+    // Run the transformation
+    const { stdout, stderr } = await execAsync(command);
+    
+    if (verbose) {
+      console.log(stdout);
+    }
+    
+    if (stderr && verbose) {
+      console.error(stderr);
+    }
+    
+    console.log('Transformation complete!');
+    console.log('Remember to:');
+    console.log('1. Add "zod" to your dependencies if it\'s not already there');
+    console.log('2. Check the transformed files manually for any issues');
+    console.log('3. Run your tests to ensure everything still works');
+  } catch (error) {
+    console.error('Error running the transformation:', error);
+    process.exit(1);
+  }
 }
+
+run();

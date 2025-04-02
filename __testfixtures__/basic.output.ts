@@ -1,34 +1,41 @@
-import z from "zod";
+import * as z from "zod";
 
-// Basic primitive types
-const StringType = z.string();
-const NumberType = z.number();
-const BooleanType = z.boolean();
-
-// Complex types
-const ArrayType = z.array(z.string());
-const TupleType = z.tuple([z.string(), z.number(), z.boolean()]);
-const ObjectType = z.object({
+// Basic schema definitions
+const User = z.object({
+  id: z.string(),
   name: z.string(),
   age: z.number(),
   isActive: z.boolean(),
-  tags: z.array(z.string())
+  tags: z.array(z.string()),
+  role: z.union([
+    z.literal("admin"),
+    z.literal("user"),
+    z.literal("guest")
+  ])
 });
 
-// Union and Literal types
-const LiteralType = z.literal("hello");
-const UnionType = z.union([z.string(), z.number(), z.literal(42)]);
+type User = z.infer<typeof User>;
 
-// Optional and constrained types
-const OptionalType = z.object({
-  name: z.string(),
-  age: z.number().optional()
-});
+// Using the schemas
+function validateUser(data: unknown) {
+  const result = User.safeParse(data);
+  if (result.success) {
+    // data is now typed as User
+    console.log(`User ${result.data.name} is ${result.data.age} years old`);
+    return true;
+  }
+  return false;
+}
 
-const ConstrainedNumber = z.number().refine(
-  (n) => n > 0,
-  { message: "Must be positive" }
-);
+function processUser(rawData: unknown) {
+  try {
+    const user = User.parse(rawData);
+    console.log(`Validated user: ${user.name}`);
+    return user;
+  } catch (error) {
+    console.error("Validation failed:", error);
+    return null;
+  }
+}
 
-// Dictionary type
-const DictionaryType = z.record(z.string(), z.number());
+export { User, validateUser, processUser };

@@ -327,9 +327,36 @@ function transformRuntypeToZod(
       // Handle arguments based on type
       if (runtypeKey === 'Array') {
         // Array(Type) -> z.array(z.type())
-        j(path).replaceWith(
-          j.callExpression(newCallee, [transformArgument(j, path.value.arguments[0], namespaces, jsCastNodes)])
-        );
+        const arg = path.value.arguments[0];
+        
+        // Special handling for Record with object literal inside Array
+        if (arg && arg.type === 'CallExpression' && 
+            arg.callee.type === 'Identifier' && 
+            arg.callee.name === 'Record' &&
+            arg.arguments.length === 1 && 
+            arg.arguments[0].type === 'ObjectExpression') {
+          
+          // Process the Record's object properties
+          const objProps = processObjectProperties(j, arg.arguments[0], namespaces, jsCastNodes);
+          
+          // Array(Record({...})) -> z.array(z.object({...}))
+          j(path).replaceWith(
+            j.callExpression(
+              newCallee, 
+              [
+                j.callExpression(
+                  j.memberExpression(j.identifier('z'), j.identifier('object')),
+                  [j.objectExpression(objProps)]
+                )
+              ]
+            )
+          );
+        } else {
+          // Regular Array handling
+          j(path).replaceWith(
+            j.callExpression(newCallee, [transformArgument(j, arg, namespaces, jsCastNodes)])
+          );
+        }
       } else if (runtypeKey === 'Tuple') {
         // Tuple(A, B, C) -> z.tuple([z.a(), z.b(), z.c()])
         const transformedArgs = path.value.arguments.map((arg: any) => 
@@ -431,13 +458,42 @@ function transformRuntypeToZod(
           
           // Special handling for different runtype functions
           if (runtypeKey === 'Array') {
-            // t.Array(t.String) -> z.array(z.string())
-            j(path.parent).replaceWith(
-              j.callExpression(
-                j.memberExpression(j.identifier('z'), j.identifier('array')),
-                [transformArgument(j, callExpr.arguments[0], namespaces, jsCastNodes)]
-              )
-            );
+            const arg = callExpr.arguments[0];
+            
+            // Special handling for t.Record with object literal inside t.Array
+            if (arg && arg.type === 'CallExpression' && 
+                arg.callee.type === 'MemberExpression' &&
+                arg.callee.object.type === 'Identifier' &&
+                namespaces.includes(arg.callee.object.name) &&
+                arg.callee.property.name === 'Record' &&
+                arg.arguments.length === 1 && 
+                arg.arguments[0].type === 'ObjectExpression') {
+              
+              // Process the Record's object properties
+              const objProps = processObjectProperties(j, arg.arguments[0], namespaces, jsCastNodes);
+              
+              // t.Array(t.Record({...})) -> z.array(z.object({...}))
+              j(path.parent).replaceWith(
+                j.callExpression(
+                  j.memberExpression(j.identifier('z'), j.identifier('array')),
+                  [
+                    j.callExpression(
+                      j.memberExpression(j.identifier('z'), j.identifier('object')),
+                      [j.objectExpression(objProps)]
+                    )
+                  ]
+                )
+              );
+            } else {
+              // Regular t.Array handling
+              // t.Array(t.String) -> z.array(z.string())
+              j(path.parent).replaceWith(
+                j.callExpression(
+                  j.memberExpression(j.identifier('z'), j.identifier('array')),
+                  [transformArgument(j, arg, namespaces, jsCastNodes)]
+                )
+              );
+            }
           } else if (runtypeKey === 'Tuple') {
             // t.Tuple(t.String, t.Number) -> z.tuple([z.string(), z.number()])
             const transformedArgs = callExpr.arguments.map((arg: any) => 

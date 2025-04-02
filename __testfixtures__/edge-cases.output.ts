@@ -24,6 +24,20 @@ const UserSchema = z.object({
   role: z.union([z.literal("admin"), z.literal("user")]),
   coordinates: z.tuple([z.number(), z.number()]),
 });
+const UserSchema = z.array(
+  z.object({
+    id: z.string(),
+    age: z.number(),
+    isActive: z.boolean(),
+    tags: z.array(z.string()),
+    profile: z.object({
+      bio: z.string(),
+      settings: z.record(z.string(), z.boolean()),
+    }),
+    role: z.union([z.literal("admin"), z.literal("user")]),
+    coordinates: z.tuple([z.number(), z.number()]),
+  })
+);
 
 // With optional fields
 const FormSchema = z.object({

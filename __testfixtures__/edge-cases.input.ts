@@ -26,6 +26,21 @@ const UserSchema = t.Record({
   role: t.Union(t.Literal("admin"), t.Literal("user")),
   coordinates: t.Tuple(t.Number, t.Number),
 });
+// @ts-expect-error
+const UserSchema = t.Array(
+  t.Record({
+    id: t.String,
+    age: t.Number,
+    isActive: t.Boolean,
+    tags: t.Array(t.String),
+    profile: t.Object({
+      bio: t.String,
+      settings: t.Record(t.String, t.Boolean),
+    }),
+    role: t.Union(t.Literal("admin"), t.Literal("user")),
+    coordinates: t.Tuple(t.Number, t.Number),
+  })
+);
 
 // With optional fields
 const FormSchema = t.Object({

@@ -99,6 +99,9 @@ function transformer(file: FileInfo, api: API, options: Options) {
   // Find any namespace imports for runtypes (e.g., import * as t from "runtypes")
   let namespacePrefix: string | null = null;
   
+  // Track aliases of imported types
+  let symbolAlias: string | null = null;
+
   root
     .find(j.ImportDeclaration)
     .filter((path) => {
@@ -117,6 +120,13 @@ function transformer(file: FileInfo, api: API, options: Options) {
           if (j.ImportNamespaceSpecifier.check(specifier)) {
             // Store the namespace prefix for later usage
             namespacePrefix = (specifier.local as Identifier).name;
+          } else if (j.ImportSpecifier.check(specifier)) {
+            // Track any aliases, especially for Symbol
+            if (j.Identifier.check(specifier.imported) && 
+                j.Identifier.check(specifier.local) &&
+                specifier.imported.name === "Symbol") {
+              symbolAlias = specifier.local.name;
+            }
           }
         });
       }
@@ -166,7 +176,8 @@ function transformer(file: FileInfo, api: API, options: Options) {
   root
     .find(j.Identifier)
     .filter((path: ASTPath<Identifier>) => {
-      return Object.keys(typeMapping).includes(path.node.name);
+      return Object.keys(typeMapping).includes(path.node.name) || 
+             (symbolAlias !== null && path.node.name === symbolAlias);
     })
     .forEach((path: ASTPath<Identifier>) => {
       // Don't replace identifiers that are part of import declarations
@@ -187,11 +198,11 @@ function transformer(file: FileInfo, api: API, options: Options) {
         return;
       }
 
-      // Don't replace callee part of call expressions like Boolean(), String(), Number()
+      // Don't replace callee part of call expressions like Boolean(), String(), Number(), Symbol()
       if (
         j.CallExpression.check(path.parent.node) &&
         path.parent.node.callee === path.node &&
-        ["Boolean", "String", "Number"].includes(path.node.name)
+        ["Boolean", "String", "Number", "Symbol"].includes(path.node.name)
       ) {
         // Skip JS built-in function calls
         return;
@@ -227,6 +238,15 @@ function transformer(file: FileInfo, api: API, options: Options) {
         j(path).replaceWith(
           j.callExpression(
             j.memberExpression(j.identifier("z"), j.identifier("boolean")),
+            []
+          )
+        );
+        hasModifications = true;
+      } else if (symbolAlias !== null && typeName === symbolAlias) {
+        // Handle Symbol alias
+        j(path).replaceWith(
+          j.callExpression(
+            j.memberExpression(j.identifier("z"), j.identifier("symbol")),
             []
           )
         );
@@ -915,11 +935,22 @@ function transformer(file: FileInfo, api: API, options: Options) {
   transformedSource = transformedSource.replace(/z\.boolean\(\)\((.*?)\)/g, 'Boolean($1)');
   transformedSource = transformedSource.replace(/z\.string\(\)\((.*?)\)/g, 'String($1)');
   transformedSource = transformedSource.replace(/z\.number\(\)\((.*?)\)/g, 'Number($1)');
+  transformedSource = transformedSource.replace(/z\.symbol\(\)\((.*?)\)/g, 'Symbol($1)');
   
   // Handle multi-line cases with non-greedy matching
   transformedSource = transformedSource.replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Boolean($1)');
   transformedSource = transformedSource.replace(/z\.string\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'String($1)');
   transformedSource = transformedSource.replace(/z\.number\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Number($1)');
+  transformedSource = transformedSource.replace(/z\.symbol\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Symbol($1)');
+  
+  // Fix JavaScript symbol calls that don't have nested parentheses - handle direct usage
+  // This fixes cases like const ID = Symbol('id') -> const ID = z.symbol('id') -> const ID = Symbol('id')
+  transformedSource = transformedSource.replace(/\bconst\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g, 'const $1 = Symbol($2)');
+  transformedSource = transformedSource.replace(/\blet\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g, 'let $1 = Symbol($2)');
+  transformedSource = transformedSource.replace(/\bvar\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g, 'var $1 = Symbol($2)');
+  
+  // This fixes cases like return Symbol('x') -> return z.symbol('x') -> return Symbol('x')
+  transformedSource = transformedSource.replace(/\breturn\s+z\.symbol\(([^)]+)\)/g, 'return Symbol($1)');
   
   // Fix filter(Boolean) cases - look for .filter followed by z.boolean()
   transformedSource = transformedSource.replace(/\.filter\s*\(\s*z\.boolean\(\)\s*\)/g, '.filter(Boolean)');

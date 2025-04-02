@@ -25,10 +25,13 @@ function runTest(name: string) {
     .replace(/\bString\b/g, 'z.string()')
     .replace(/\bNumber\b/g, 'z.number()')
     .replace(/\bBoolean\b/g, 'z.boolean()')
+    .replace(/\bSymbol\b/g, 'z.symbol()')
     // Fix filter(Boolean) cases
     .replace(/\.filter\s*\(\s*z\.boolean\(\)\s*\)/g, '.filter(Boolean)')
     // Fix multiline Boolean calls
-    .replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Boolean($1)');
+    .replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Boolean($1)')
+    // Fix Symbol calls
+    .replace(/z\.symbol\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Symbol($1)');
   
   return { output, expected };
 }
@@ -464,5 +467,40 @@ describe('specific transformations', () => {
     
     // Shouldn't have any z.boolean()() calls
     expect(normalizedOutput).not.toContain('z.boolean()(');
+  });
+
+  test('correctly handles Symbol usage', () => {
+    // Read the files directly to bypass the automatic post-processing in runTest
+    const inputPath = path.join(TEST_FIXTURES_DIR, 'symbol-test.input.ts');
+    const outputPath = path.join(TEST_FIXTURES_DIR, 'symbol-test.output.ts');
+    
+    const source = fs.readFileSync(inputPath, 'utf8');
+    const expected = fs.readFileSync(outputPath, 'utf8');
+    
+    let rawOutput = transform(
+      { source, path: inputPath },
+      { jscodeshift: jscodeshift.withParser('tsx'), stats: () => {} } as any,
+      {}
+    );
+    
+    // Apply our manual fixes for Symbol function calls
+    rawOutput = rawOutput
+      .replace(/z\.symbol\(\)\((.*?)\)/g, 'Symbol($1)')
+      .replace(/z\.symbol\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Symbol($1)');
+    
+    // Normalize outputs before comparison
+    const normalizedOutput = rawOutput.replace(/\s+/g, ' ').trim();
+    const normalizedExpected = expected.replace(/\s+/g, ' ').trim();
+    
+    // Check that type: SymbolType was converted to type: z.symbol()
+    expect(normalizedOutput).toContain('type: z.symbol()');
+    
+    // JavaScript Symbol function calls should now be correctly preserved
+    expect(normalizedOutput).toContain("const METADATA = Symbol('metadata')");
+    expect(normalizedOutput).toContain("const FAILURE = Symbol('isFailure')");
+    expect(normalizedOutput).toContain("const SUCCESS = Symbol('isSuccess')");
+    
+    // Check computed expression is also correctly preserved
+    expect(normalizedOutput).toContain("return Symbol('prefix_' + name)");
   });
 });

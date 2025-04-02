@@ -127,6 +127,8 @@ function transformer(file: FileInfo, api: API, options: Options) {
 
   // First, create a separate transformation to handle JavaScript builtin function calls
   // To avoid them being treated as runtypes types
+  
+  // Mark any Boolean, String, Number as JavaScript built-ins when used as function calls
   root
     .find(j.CallExpression)
     .filter((path) => {
@@ -138,6 +140,26 @@ function transformer(file: FileInfo, api: API, options: Options) {
     .forEach((path) => {
       // Add a property to mark this as a JavaScript function
       (path.node.callee as any).__jsBuiltin = true;
+    });
+    
+  // Also mark any Boolean, String, Number as JavaScript built-ins when used as arguments
+  // This handles cases like array.filter(Boolean)
+  root
+    .find(j.Identifier)
+    .filter((path) => {
+      return (
+        ["Boolean", "String", "Number"].includes(path.node.name) &&
+        // Used as function argument
+        ((j.CallExpression.check(path.parent.node) && 
+          path.parent.node.arguments.includes(path.node)) ||
+        // Used in member expression chain (not as object)
+        (j.MemberExpression.check(path.parent.node) && 
+          path.parent.node.property === path.node))
+      );
+    })
+    .forEach((path) => {
+      // Mark as JavaScript built-in
+      (path.node as any).__jsBuiltin = true;
     });
     
   // Replace standalone type identifiers
@@ -889,9 +911,18 @@ function transformer(file: FileInfo, api: API, options: Options) {
   }
   
   // Fix any mistakenly transformed JavaScript built-in function calls
+  // Handle standard inline cases
   transformedSource = transformedSource.replace(/z\.boolean\(\)\((.*?)\)/g, 'Boolean($1)');
   transformedSource = transformedSource.replace(/z\.string\(\)\((.*?)\)/g, 'String($1)');
   transformedSource = transformedSource.replace(/z\.number\(\)\((.*?)\)/g, 'Number($1)');
+  
+  // Handle multi-line cases with non-greedy matching
+  transformedSource = transformedSource.replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Boolean($1)');
+  transformedSource = transformedSource.replace(/z\.string\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'String($1)');
+  transformedSource = transformedSource.replace(/z\.number\(\)\s*\(\s*([\s\S]*?)\s*\)/g, 'Number($1)');
+  
+  // Fix filter(Boolean) cases - look for .filter followed by z.boolean()
+  transformedSource = transformedSource.replace(/\.filter\s*\(\s*z\.boolean\(\)\s*\)/g, '.filter(Boolean)');
 
   return transformedSource;
 }

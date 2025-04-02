@@ -96,7 +96,9 @@ function transformer(file: FileInfo, api: API, options: Options) {
   // Track imports to add
   let needsZodImport = false;
 
-  // Replace imports
+  // Find any namespace imports for runtypes (e.g., import * as t from "runtypes")
+  let namespacePrefix: string | null = null;
+  
   root
     .find(j.ImportDeclaration)
     .filter((path) => {
@@ -108,6 +110,16 @@ function transformer(file: FileInfo, api: API, options: Options) {
     .forEach((path) => {
       hasModifications = true;
       needsZodImport = true;
+      
+      // Check if this is a namespace import
+      if (path.node.specifiers) {
+        path.node.specifiers.forEach(specifier => {
+          if (j.ImportNamespaceSpecifier.check(specifier)) {
+            // Store the namespace prefix for later usage
+            namespacePrefix = (specifier.local as Identifier).name;
+          }
+        });
+      }
 
       // Remove runtypes imports and prepare to add zod import
       j(path).remove();
@@ -436,6 +448,251 @@ function transformer(file: FileInfo, api: API, options: Options) {
       (path.node.typeName as Identifier).name = "z.infer";
     });
 
+  // Handle namespace imports (e.g., t.String, t.Object, etc.)
+  if (namespacePrefix) {
+    // Find namespace calls like t.Array(t.String)
+    root
+      .find(j.CallExpression)
+      .filter((path: ASTPath<CallExpression>) => {
+        return (
+          j.MemberExpression.check(path.node.callee) &&
+          j.Identifier.check(path.node.callee.object) &&
+          (path.node.callee.object as Identifier).name === namespacePrefix &&
+          j.Identifier.check(path.node.callee.property) &&
+          Object.keys(typeMapping).includes((path.node.callee.property as Identifier).name)
+        );
+      })
+      .forEach((path: ASTPath<CallExpression>) => {
+        const callee = path.node.callee as MemberExpression;
+        const typeName = (callee.property as Identifier).name;
+        const mappedType = typeMapping[typeName];
+        
+        if (!mappedType) {
+          return;
+        }
+        
+        // Handle special cases for type constructors
+        if ((typeName === "Array" || typeName === "Object") && path.node.arguments.length > 0) {
+          // Extract the argument
+          const arg = path.node.arguments[0];
+          let argNode = null;
+          
+          // Handle t.Array(t.String) -> z.array(z.string())
+          if (
+            j.MemberExpression.check(arg) &&
+            j.Identifier.check(arg.object) &&
+            (arg.object as Identifier).name === namespacePrefix &&
+            j.Identifier.check(arg.property)
+          ) {
+            const argTypeName = (arg.property as Identifier).name;
+            const argMappedType = typeMapping[argTypeName];
+            
+            if (argMappedType) {
+              argNode = parseZodExpression(argMappedType);
+            }
+          }
+          
+          // Create the appropriate call expression
+          let zodExpr;
+          if (typeName === "Array") {
+            zodExpr = j.callExpression(
+              j.memberExpression(j.identifier("z"), j.identifier("array")),
+              argNode ? [argNode] : [arg]
+            );
+          } else if (typeName === "Object") {
+            // It's an Object type, direct mapping is z.object
+            zodExpr = j.callExpression(
+              j.memberExpression(j.identifier("z"), j.identifier("object")),
+              [arg] // Keep the original argument (object literal)
+            );
+            
+            // Process object properties if they contain namespace references
+            if (j.ObjectExpression.check(arg)) {
+              arg.properties.forEach(prop => {
+                if (
+                  j.Property.check(prop) && 
+                  j.MemberExpression.check(prop.value) &&
+                  j.Identifier.check(prop.value.object) &&
+                  (prop.value.object as Identifier).name === namespacePrefix &&
+                  j.Identifier.check(prop.value.property)
+                ) {
+                  const propTypeName = (prop.value.property as Identifier).name;
+                  const propMappedType = typeMapping[propTypeName];
+                  
+                  if (propMappedType) {
+                    prop.value = parseZodExpression(propMappedType);
+                  }
+                }
+              });
+            }
+          }
+          
+          // Replace the entire call expression
+          j(path).replaceWith(zodExpr);
+          hasModifications = true;
+          return;
+        }
+        
+        // For other types, just change t.X() to the corresponding z expression
+        if (mappedType.includes("(")) {
+          // For complete expressions like z.string()
+          j(path).replaceWith(parseZodExpression(mappedType));
+        } else {
+          // For expressions that need arguments like z.object
+          path.node.callee = parseZodExpression(mappedType);
+        }
+        hasModifications = true;
+      });
+      
+    // Find all member expressions with the namespace prefix
+    root
+      .find(j.MemberExpression)
+      .filter((path: ASTPath<MemberExpression>) => {
+        return (
+          j.Identifier.check(path.node.object) &&
+          (path.node.object as Identifier).name === namespacePrefix &&
+          j.Identifier.check(path.node.property) &&
+          Object.keys(typeMapping).includes((path.node.property as Identifier).name)
+        );
+      })
+      .forEach((path: ASTPath<MemberExpression>) => {
+        const typeName = (path.node.property as Identifier).name;
+        const mappedType = typeMapping[typeName];
+
+        if (!mappedType) {
+          return;
+        }
+
+        // Special case for usage in CallExpression as an argument
+        if (j.CallExpression.check(path.parent.node) && path.parent.node.arguments.includes(path.node)) {
+          // Handle t.String as argument to another function (transform to z.string())
+          if (["String", "Number", "Boolean", "Null", "Undefined", "Unknown", "Void", "Never"].includes(typeName)) {
+            j(path).replaceWith(parseZodExpression(mappedType));
+            hasModifications = true;
+          } else {
+            // For other types, just change the namespace
+            path.node.object = j.identifier("z");
+            const propertyName = typeName.toLowerCase();
+            // Special cases for casing
+            if (typeName === "Object" || typeName === "Record") {
+              path.node.property = j.identifier("object");
+            } else if (typeName === "Intersect") {
+              path.node.property = j.identifier("intersection");
+            } else {
+              path.node.property = j.identifier(propertyName);
+            }
+            hasModifications = true;
+          }
+        }
+        // Simple replacement for primitive types
+        else if (["String", "Number", "Boolean", "Null", "Undefined", "Unknown", "Void", "Never"].includes(typeName)) {
+          j(path).replaceWith(parseZodExpression(mappedType));
+          hasModifications = true;
+        } 
+        // For types that need arguments, keep the member expression form but change the prefix
+        else if (["Array", "Tuple", "Record", "Object", "Union", "Intersect", "Optional", "Literal"].includes(typeName)) {
+          // Simply change t.X to z.x (preserving casing where needed)
+          path.node.object = j.identifier("z");
+          const propertyName = typeName.toLowerCase();
+          // Special cases for casing
+          if (typeName === "Object" || typeName === "Record") {
+            path.node.property = j.identifier("object");
+          } else if (typeName === "Intersect") {
+            path.node.property = j.identifier("intersection");
+          } else {
+            path.node.property = j.identifier(propertyName);
+          }
+          hasModifications = true;
+        }
+      });
+      
+    // Find namespace Static types and convert to z.infer
+    root
+      .find(j.TSTypeReference)
+      .forEach((path: ASTPath<TSTypeReference>) => {
+        if (
+          path.node.typeName && 
+          typeof path.node.typeName === 'object' &&
+          'object' in path.node.typeName &&
+          'property' in path.node.typeName &&
+          path.node.typeName.object && 
+          path.node.typeName.property && 
+          j.Identifier.check(path.node.typeName.object) &&
+          (path.node.typeName.object as Identifier).name === namespacePrefix &&
+          j.Identifier.check(path.node.typeName.property) &&
+          (path.node.typeName.property as Identifier).name === "Static"
+        ) {
+          hasModifications = true;
+          // Replace t.Static with z.infer
+          path.node.typeName = j.memberExpression(
+            j.identifier("z"),
+            j.identifier("infer")
+          ) as any;
+        }
+      });
+      
+    // Handle namespace method calls like t.String.guard(), t.Number.check(), etc.
+    root
+      .find(j.MemberExpression)
+      .filter((path: ASTPath<MemberExpression>) => {
+        return (
+          j.MemberExpression.check(path.node.object) &&
+          j.Identifier.check(path.node.object.object) &&
+          (path.node.object.object as Identifier).name === namespacePrefix &&
+          j.Identifier.check(path.node.object.property) &&
+          Object.keys(typeMapping).includes((path.node.object.property as Identifier).name) &&
+          j.Identifier.check(path.node.property) &&
+          ["check", "guard", "parse"].includes((path.node.property as Identifier).name)
+        );
+      })
+      .forEach((path: ASTPath<MemberExpression>) => {
+        // Ensure we're dealing with a MemberExpression with property field
+        const objectExpr = path.node.object as MemberExpression;
+        const typeName = (objectExpr.property as Identifier).name;
+        const methodName = (path.node.property as Identifier).name;
+        
+        // Check if we're in an if statement condition for guard
+        const isInIfCondition = 
+          methodName === "guard" && 
+          path.parent && 
+          j.CallExpression.check(path.parent.node) && 
+          path.parent.parent &&
+          j.IfStatement.check(path.parent.parent.node) && 
+          path.parent.parent.node.test === path.parent.node;
+          
+        // Transform t.Type.method() to z.type().zodMethod()
+        if (["String", "Number", "Boolean", "Null", "Undefined", "Unknown", "Void", "Never"].includes(typeName)) {
+          const mappedType = typeMapping[typeName];
+          if (mappedType) {
+            // Replace with the appropriate zod method
+            const newMethod = methodName === "guard" ? "safeParse" : "parse";
+            
+            // Create the base expression: z.type().method
+            const baseExpr = j.memberExpression(
+              parseZodExpression(mappedType),
+              j.identifier(newMethod)
+            );
+            
+            // If this is a guard method in an if condition, we need to add .success
+            if (isInIfCondition) {
+              const callExpr = path.parent.node as CallExpression;
+              j(path.parent).replaceWith(
+                j.memberExpression(
+                  j.callExpression(baseExpr, callExpr.arguments),
+                  j.identifier("success")
+                )
+              );
+            } else {
+              // Just replace the method expression
+              j(path).replaceWith(baseExpr);
+            }
+            
+            hasModifications = true;
+          }
+        }
+      });
+  }  
+
   // Replace validation methods
   root
     .find(j.MemberExpression)
@@ -444,7 +701,12 @@ function transformer(file: FileInfo, api: API, options: Options) {
         j.Identifier.check(path.node.property) &&
         ["check", "guard", "parse"].includes(
           (path.node.property as Identifier).name
-        )
+        ) && 
+        // Special case for namespace methods like t.Boolean.guard()
+        (!namespacePrefix || 
+          !j.MemberExpression.check(path.node.object) || 
+          !j.Identifier.check(path.node.object.object) ||
+          (path.node.object.object as Identifier).name !== namespacePrefix)
       );
     })
     .forEach((path: ASTPath<MemberExpression>) => {
@@ -498,7 +760,49 @@ function transformer(file: FileInfo, api: API, options: Options) {
     root.get().node.program.body.unshift(zodImport);
   }
 
-  return hasModifications ? root.toSource() : file.source;
+  // Get the transformed source code
+  let transformedSource = hasModifications ? root.toSource() : file.source;
+  
+  // Post-processing to fix any remaining namespace issues
+  if (namespacePrefix) {
+    // Replace any remaining t.z.string() or similar patterns with z.string()
+    transformedSource = transformedSource.replace(
+      new RegExp(`${namespacePrefix}\\.z\\.([a-zA-Z]+)(\\(\\))`, 'g'),
+      'z.$1$2'
+    );
+    
+    // Replace any t.Static with z.infer
+    transformedSource = transformedSource.replace(
+      new RegExp(`${namespacePrefix}\\.Static`, 'g'),
+      'z.infer'
+    );
+    
+    // Replace t.Boolean.guard(data) with z.boolean().safeParse(data).success
+    transformedSource = transformedSource.replace(
+      new RegExp(`${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\.guard\\(([^)]+)\\)`, 'g'),
+      (match, type, arg) => {
+        const lowerType = type.toLowerCase();
+        return `z.${lowerType}().safeParse(${arg}).success`;
+      }
+    );
+    
+    // Replace t.Array(t.String) with z.array(z.string())
+    transformedSource = transformedSource.replace(
+      new RegExp(`${namespacePrefix}\\.Array\\(${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\)`, 'g'),
+      (match, type) => {
+        const lowerType = type.toLowerCase();
+        return `z.array(z.${lowerType}())`;
+      }
+    );
+    
+    // Explicitly fix return statements using safeParse to add .success
+    transformedSource = transformedSource.replace(
+      /return\s+z\.([a-zA-Z]+)\(\)\.safeParse\((.*?)\);/g,
+      'return z.$1().safeParse($2).success;'
+    );
+  }
+
+  return transformedSource;
 }
 
 export default transformer;

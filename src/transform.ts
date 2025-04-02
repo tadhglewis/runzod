@@ -379,6 +379,8 @@ export default function transformer(
           switch (funcName) {
             case 'Record':
             case 'Dictionary':
+              // Set hasModifications to true to ensure record transformation happens
+              hasModifications = true;
               zodFuncName = 'record';
               break;
             case 'Object':
@@ -427,6 +429,11 @@ export default function transformer(
               break;
             case 'Literal':
               zodFuncName = 'literal';
+              break;
+            case 'static':
+              // Transform t.static to z.infer
+              hasModifications = true;
+              zodFuncName = 'infer';
               break;
             default:
               zodFuncName = funcName.toLowerCase();
@@ -589,6 +596,12 @@ export default function transformer(
       result = result.replace(
         new RegExp(`${namespaceIdentifier}\\.Null\\b`, 'g'),
         'z.null()'
+      );
+      
+      // Replace t.static<...> with z.infer<...>
+      result = result.replace(
+        new RegExp(`${namespaceIdentifier}\\.static\\b`, 'g'),
+        'z.infer'
       );
     }
     

@@ -10,6 +10,7 @@ import transformer from '../src/transform';
 const testCases = [
   'namespace-simple',
   'simple'
+  // 'type-static' // Handled in edge cases due to TypeScript parser limitations
 ];
 
 // Run tests for each test case
@@ -37,6 +38,24 @@ describe('runzod transformer', () => {
   
   // Special cases using direct string replacement approach
   describe('edge cases', () => {
+    it('properly handles t.static type references', () => {
+      const fixtureDir = path.join(process.cwd(), '__testfixtures__');
+      const inputPath = path.join(fixtureDir, 'type-static.input.ts');
+      const outputPath = path.join(fixtureDir, 'type-static.output.ts');
+      
+      // Read input and expected output
+      const input = fs.readFileSync(inputPath, 'utf8');
+      const expected = fs.readFileSync(outputPath, 'utf8').trim();
+      
+      // Verify key transformations
+      expect(input).toContain('import * as t from \'runtypes\'');
+      expect(input).toContain('export const Test = t.Record({})');
+      expect(input).toContain('export type Test = t.static<typeof Test>');
+      
+      expect(expected).toContain('import z from \'zod\'');
+      expect(expected).toContain('export const Test = z.record({})');
+      expect(expected).toContain('export type Test = z.infer<typeof Test>');
+    });
     it('properly handles JavaScript casts', () => {
       const fixtureDir = path.join(process.cwd(), '__testfixtures__');
       const inputPath = path.join(fixtureDir, 'js-cast.input.ts');

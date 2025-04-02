@@ -24,16 +24,18 @@ const transform: Transform = (file: FileInfo, api: API, options: Options) => {
   const namespaces: string[] = [];
 
   // Find namespace imports - e.g., import * as t from 'runtypes'
-  root.find(j.ImportNamespaceSpecifier).forEach((path) => {
-    if (
-      path.parent.value.type === "ImportDeclaration" &&
-      path.parent.value.source.value === "runtypes"
-    ) {
-      if (path.value.local && path.value.local.name) {
-        namespaces.push(path.value.local.name as string);
+  root
+    .find(j.ImportNamespaceSpecifier)
+    .forEach((path) => {
+      if (
+        path.parent.value.type === "ImportDeclaration" &&
+        path.parent.value.source.value === "runtypes"
+      ) {
+        if (path.value.local && path.value.local.name) {
+          namespaces.push(path.value.local.name as string);
+        }
       }
-    }
-  });
+    });
 
   // Initialize a set to keep track of Runtype identifiers used for JavaScript casts
   const jsCastNodes = new Set<string>();
@@ -291,7 +293,7 @@ function transformRuntypeToZod(
     Array: "array",
     Tuple: "tuple",
     Object: "object",
-    Record: "object", // Pre v7 for objects
+    Record: "record", // Pre v7 for objects
     Union: "union",
     Literal: "literal",
     Optional: "optional",
@@ -305,35 +307,37 @@ function transformRuntypeToZod(
     }
 
     // Direct usage - e.g., String, Number, etc.
-    root.find(j.Identifier, { name: runtypeKey }).forEach((path: any) => {
-      // Skip if part of import statement, other identifiers or javascript casts
-      if (
-        path.parent.value.type === "ImportSpecifier" ||
-        path.parent.value.type === "TSQualifiedName" ||
-        path.name === "property" ||
-        jsCastNodes.has(path.value.name)
-      ) {
-        return;
-      }
+    root
+      .find(j.Identifier, { name: runtypeKey })
+      .forEach((path: any) => {
+        // Skip if part of import statement, other identifiers or javascript casts
+        if (
+          path.parent.value.type === "ImportSpecifier" ||
+          path.parent.value.type === "TSQualifiedName" ||
+          path.name === "property" ||
+          jsCastNodes.has(path.value.name)
+        ) {
+          return;
+        }
 
-      // Handle direct type references
-      if (
-        path.parent.value.type !== "CallExpression" &&
-        path.parent.value.type !== "MemberExpression"
-      ) {
-        // Replace with z.method()
-        j(path).replaceWith(
-          j.callExpression(
-            j.memberExpression(
-              j.identifier("z"),
-              j.identifier(typeMapping[runtypeKey])
-            ),
-            []
-          )
-        );
-        modified = true;
-      }
-    });
+        // Handle direct type references
+        if (
+          path.parent.value.type !== "CallExpression" &&
+          path.parent.value.type !== "MemberExpression"
+        ) {
+          // Replace with z.method()
+          j(path).replaceWith(
+            j.callExpression(
+              j.memberExpression(
+                j.identifier("z"),
+                j.identifier(typeMapping[runtypeKey])
+              ),
+              []
+            )
+          );
+          modified = true;
+        }
+      });
 
     // Invocations - e.g., String.withConstraint(), Array(String), etc.
     root
@@ -410,9 +414,7 @@ function transformRuntypeToZod(
           );
         } else if (runtypeKey === "Literal") {
           // Literal(value) -> z.literal(value)
-          j(path).replaceWith(
-            j.callExpression(newCallee, path.value.arguments)
-          );
+          j(path).replaceWith(j.callExpression(newCallee, path.value.arguments));
         } else if (runtypeKey === "Optional") {
           // Optional(Type) -> z.type().optional()
           const transformedArg = transformArgument(
@@ -461,7 +463,10 @@ function transformRuntypeToZod(
               jsCastNodes
             );
             j(path).replaceWith(
-              j.callExpression(newCallee, [keyType, valueType])
+              j.callExpression(
+                j.memberExpression(j.identifier("z"), j.identifier("record")),
+                [keyType, valueType]
+              )
             );
           }
         } else if (runtypeKey === "Object") {
@@ -506,6 +511,64 @@ function transformRuntypeToZod(
           []
         );
         path.value.property = j.identifier("refine");
+
+        // Handle the CallExpression parent to transform the arguments correctly
+        if (path.parent && path.parent.value.type === "CallExpression") {
+          const callExpr = path.parent.value;
+          
+          // Get constraint function and check for error message pattern
+          const constraintFn = callExpr.arguments.length > 0 ? callExpr.arguments[0] : null;
+          
+          if (constraintFn && 
+             (constraintFn.type === "ArrowFunctionExpression" || 
+              constraintFn.type === "FunctionExpression")) {
+            
+            // Handle inline error message: (s) => test(s) || "error message"
+            if (constraintFn.body.type === "LogicalExpression" && 
+                constraintFn.body.operator === "||" && 
+                constraintFn.body.right.type === "Literal") {
+              
+              // Extract the condition and error message
+              const condition = constraintFn.body.left;
+              const errorMsg = constraintFn.body.right;
+              
+              // Replace the function body with just the condition
+              constraintFn.body = condition;
+              
+              // Create a message options object with only the message property
+              const msgOptions = j.objectExpression([
+                j.property("init", j.identifier("message"), errorMsg)
+              ]);
+              
+              // Set as second argument, replacing any existing options
+              if (callExpr.arguments.length === 1) {
+                callExpr.arguments.push(msgOptions);
+              } else if (callExpr.arguments.length > 1) {
+                // Replace existing options with just the message option 
+                callExpr.arguments[1] = msgOptions;
+              }
+            }
+          }
+          
+          // Look for name property in options object and remove it
+          if (callExpr.arguments.length > 1 && 
+              callExpr.arguments[1].type === "ObjectExpression") {
+            
+            const options = callExpr.arguments[1];
+            // If this is the 'name' option from withConstraint, replace it entirely with {message: value}
+            const nameProps = options.properties.filter((prop: any) => 
+              prop.key.name === "name"
+            );
+            
+            if (nameProps.length > 0) {
+              // Create a new options object with just the message property 
+              callExpr.arguments[1] = j.objectExpression([
+                j.property("init", j.identifier("message"), nameProps[0].value)
+              ]);
+            }
+          }
+        }
+
         modified = true;
       });
   });
@@ -561,10 +624,7 @@ function transformRuntypeToZod(
                 // t.Array(t.Record({...})) -> z.array(z.object({...}))
                 j(path.parent).replaceWith(
                   j.callExpression(
-                    j.memberExpression(
-                      j.identifier("z"),
-                      j.identifier("array")
-                    ),
+                    j.memberExpression(j.identifier("z"), j.identifier("array")),
                     [
                       j.callExpression(
                         j.memberExpression(
@@ -581,10 +641,7 @@ function transformRuntypeToZod(
                 // t.Array(t.String) -> z.array(z.string())
                 j(path.parent).replaceWith(
                   j.callExpression(
-                    j.memberExpression(
-                      j.identifier("z"),
-                      j.identifier("array")
-                    ),
+                    j.memberExpression(j.identifier("z"), j.identifier("array")),
                     [transformArgument(j, arg, namespaces, jsCastNodes)]
                   )
                 );
@@ -692,10 +749,7 @@ function transformRuntypeToZod(
               // t.Literal(value) -> z.literal(value)
               j(path.parent).replaceWith(
                 j.callExpression(
-                  j.memberExpression(
-                    j.identifier("z"),
-                    j.identifier("literal")
-                  ),
+                  j.memberExpression(j.identifier("z"), j.identifier("literal")),
                   callExpr.arguments
                 )
               );
@@ -747,6 +801,64 @@ function transformRuntypeToZod(
             []
           );
           path.value.property = j.identifier("refine");
+          
+          // Handle the CallExpression parent to transform the arguments correctly
+          if (path.parent && path.parent.value.type === "CallExpression") {
+            const callExpr = path.parent.value;
+            
+            // Get constraint function and check for error message pattern
+            const constraintFn = callExpr.arguments.length > 0 ? callExpr.arguments[0] : null;
+            
+            if (constraintFn && 
+               (constraintFn.type === "ArrowFunctionExpression" || 
+                constraintFn.type === "FunctionExpression")) {
+              
+              // Handle inline error message: (s) => test(s) || "error message"
+              if (constraintFn.body.type === "LogicalExpression" && 
+                  constraintFn.body.operator === "||" && 
+                  constraintFn.body.right.type === "Literal") {
+                
+                // Extract the condition and error message
+                const condition = constraintFn.body.left;
+                const errorMsg = constraintFn.body.right;
+                
+                // Replace the function body with just the condition
+                constraintFn.body = condition;
+                
+                // Create a message options object with only the message property
+                const msgOptions = j.objectExpression([
+                  j.property("init", j.identifier("message"), errorMsg)
+                ]);
+                
+                // Set as second argument, replacing any existing options
+                if (callExpr.arguments.length === 1) {
+                  callExpr.arguments.push(msgOptions);
+                } else if (callExpr.arguments.length > 1) {
+                  // Replace existing options with just the message option 
+                  callExpr.arguments[1] = msgOptions;
+                }
+              }
+            }
+            
+            // Look for name property in options object and remove it
+            if (callExpr.arguments.length > 1 && 
+                callExpr.arguments[1].type === "ObjectExpression") {
+              
+              const options = callExpr.arguments[1];
+              // If this is the 'name' option from withConstraint, replace it entirely with {message: value}
+              const nameProps = options.properties.filter((prop: any) => 
+                prop.key.name === "name"
+              );
+              
+              if (nameProps.length > 0) {
+                // Create a new options object with just the message property 
+                callExpr.arguments[1] = j.objectExpression([
+                  j.property("init", j.identifier("message"), nameProps[0].value)
+                ]);
+              }
+            }
+          }
+          
           modified = true;
         });
     });
@@ -806,10 +918,7 @@ function transformArgument(
     !jsCastNodes.has(arg.name)
   ) {
     return j.callExpression(
-      j.memberExpression(
-        j.identifier("z"),
-        j.identifier(typeMapping[arg.name])
-      ),
+      j.memberExpression(j.identifier("z"), j.identifier(typeMapping[arg.name])),
       []
     );
   }
@@ -860,10 +969,7 @@ function processObjectProperties(
       const name = prop.value.name;
       if (typeMapping[name] && !jsCastNodes.has(name)) {
         newValue = j.callExpression(
-          j.memberExpression(
-            j.identifier("z"),
-            j.identifier(typeMapping[name])
-          ),
+          j.memberExpression(j.identifier("z"), j.identifier(typeMapping[name])),
           []
         );
       } else {

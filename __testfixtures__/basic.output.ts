@@ -26,7 +26,8 @@ const OptionalType = z.object({
 });
 
 const ConstrainedNumber = z.number().refine(
-  (n) => n > 0 || "Must be positive"
+  (n) => n > 0,
+  { message: "Must be positive" }
 );
 
 // Dictionary type

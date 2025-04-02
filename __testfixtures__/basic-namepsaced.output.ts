@@ -15,6 +15,15 @@ const ObjectType = z.object({
   tags: z.array(z.string()),
 });
 
+// Runtypes used to use `t.Record` instead of `t.Object`. We should transform both to zod
+// @ts-expect-error
+const RuntypesV1Record = z.object({
+  name: z.string(),
+  age: z.number(),
+  isActive: z.boolean(),
+  tags: z.array(z.string()),
+});
+
 // Union and Literal types
 const LiteralType = z.literal("hello");
 const UnionType = z.union([z.string(), z.number(), z.literal(42)]);
@@ -32,12 +41,14 @@ const DictionaryType = z.record(z.string(), z.number());
 
 // Using types for validation
 function validatePerson(data: unknown) {
-  const result = ObjectType.safeParse(data);
-  if (result.success) {
-    console.log("Valid person:", result.data);
-    return result.data;
-  } else {
-    console.error("Invalid person:", result.error);
-    return null;
+  try {
+    const result = ObjectType.parse(data);
+    console.log("Valid person:", result);
+    return result;
+  } catch (err: unknown) {
+    if (err instanceof z.ZodError) {
+      console.error("Invalid person:", err.message);
+      return null;
+    }
   }
 }

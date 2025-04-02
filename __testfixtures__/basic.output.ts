@@ -12,7 +12,7 @@ const ObjectType = z.object({
   name: z.string(),
   age: z.number(),
   isActive: z.boolean(),
-  tags: z.array(z.string()),
+  tags: z.array(z.string())
 });
 
 // Union and Literal types
@@ -22,10 +22,12 @@ const UnionType = z.union([z.string(), z.number(), z.literal(42)]);
 // Optional and constrained types
 const OptionalType = z.object({
   name: z.string(),
-  age: z.number().optional(),
+  age: z.number().optional()
 });
 
-const ConstrainedNumber = z.number().refine((n) => n > 0 || "Must be positive");
+const ConstrainedNumber = z.number().refine(
+  (n) => n > 0 || "Must be positive"
+);
 
 // Dictionary type
 const DictionaryType = z.record(z.string(), z.number());

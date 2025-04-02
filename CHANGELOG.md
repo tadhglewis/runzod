@@ -1,5 +1,11 @@
 # runzod
 
+## 2.1.0
+
+### Minor Changes
+
+- 2b29c9f: Fix required dependency
+
 ## 2.0.0
 
 ### Major Changes

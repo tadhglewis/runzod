@@ -43,10 +43,11 @@ Options:
       ? args[extIndex + 1].split(',') 
       : ['ts', 'tsx'];
     
-    const extensionPattern = extensions.map(ext => `**/*.${ext}`).join(',');
+    // Create pattern array for multiple extensions
+    const patterns = extensions.map(ext => `${targetPath}/**/*.${ext}`);
     
     // Find all TypeScript files
-    const files = await glob(`${targetPath}/${extensionPattern}`);
+    const files = await glob(patterns);
     
     if (files.length === 0) {
       console.error(`No files found in ${targetPath} with extensions: ${extensions.join(', ')}`);
@@ -62,7 +63,8 @@ Options:
     const dryRunFlag = isDryRun ? '--dry' : '';
     const printFlag = isDryRun ? '--print' : '';
     
-    const command = `${jscodeshiftBin} -t ${transformPath} ${dryRunFlag} ${printFlag} --parser=ts --extensions=${extensions.join(',')} ${targetPath}`;
+    // Since we're processing a directory, we need to use the glob pattern for jscodeshift
+    const command = `${jscodeshiftBin} -t ${transformPath} ${dryRunFlag} ${printFlag} --parser=ts --extensions=${extensions.join(',')} --ignore-pattern="node_modules/**" ${targetPath}`;
     
     if (verbose) {
       console.log(`Executing: ${command}`);

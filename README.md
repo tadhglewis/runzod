@@ -14,11 +14,7 @@ A codemod to migrate from [runtypes](https://github.com/pelotom/runtypes) to [zo
 ## Installation
 
 ```bash
-# Global installation
-npm install -g runzod
-
-# Or use without installing
-npx runzod <path-to-your-code>
+pnpm dlx runzod <path-to-your-code>
 ```
 
 ## Usage
@@ -38,46 +34,43 @@ runzod <directory> [options]
 
 ```bash
 # Transform all TypeScript files in the src directory
-runzod ./src
+pnpm dlx runzod ./src
 
 # Dry run to see what would be changed
-runzod ./src --dry
+pnpm dlx runzod ./src --dry
 
 # Transform only specific file extensions
-runzod ./src --extensions ts,tsx
+pnpm dlx runzod ./src --extensions ts,tsx
 
 # Show verbose output
-runzod ./src -v
-
-# Using jscodeshift directly
-npx jscodeshift -t node_modules/runzod/dist/transform.js --extensions=ts,tsx ./src/myfile.ts
+pnpm dlx runzod ./src -v
 ```
 
 ## Transformations
 
-| Runtypes | Zod |
-|----------|-----|
-| `import { String } from 'runtypes'` | `import { z } from 'zod'` |
-| `String` | `z.string()` |
-| `Number` | `z.number()` |
-| `Boolean` | `z.boolean()` |
-| `BigInt` | `z.bigint()` |
-| `Undefined` | `z.undefined()` |
-| `Null` | `z.null()` |
-| `Array(String)` | `z.array(z.string())` |
-| `Tuple(String, Number)` | `z.tuple([z.string(), z.number()])` |
-| `Object({...})` | `z.object({...})` |
-| `Record(String, Number)` | `z.record(z.string(), z.number())` |
-| `Union(A, B, C)` | `z.union([A, B, C])` |
-| `Intersect(A, B)` | `z.intersection([A, B])` |
-| `Literal(x)` | `z.literal(x)` |
-| `Optional(String)` | `z.string().optional()` |
-| `String.optional()` | `z.string().optional()` |
-| `String.withConstraint(...)` | `z.string().refine(...)` |
-| `String.withBrand("Brand")` | `z.string().brand("Brand")` |
-| `Type.check(data)` | `Type.parse(data)` |
-| `Type.guard(data)` | `Type.safeParse(data)` |
-| `Static<typeof Type>` | `z.infer<typeof Type>` |
+| Runtypes                            | Zod                                 |
+| ----------------------------------- | ----------------------------------- |
+| `import { String } from 'runtypes'` | `import { z } from 'zod'`           |
+| `String`                            | `z.string()`                        |
+| `Number`                            | `z.number()`                        |
+| `Boolean`                           | `z.boolean()`                       |
+| `BigInt`                            | `z.bigint()`                        |
+| `Undefined`                         | `z.undefined()`                     |
+| `Null`                              | `z.null()`                          |
+| `Array(String)`                     | `z.array(z.string())`               |
+| `Tuple(String, Number)`             | `z.tuple([z.string(), z.number()])` |
+| `Object({...})`                     | `z.object({...})`                   |
+| `Record(String, Number)`            | `z.record(z.string(), z.number())`  |
+| `Union(A, B, C)`                    | `z.union([A, B, C])`                |
+| `Intersect(A, B)`                   | `z.intersection([A, B])`            |
+| `Literal(x)`                        | `z.literal(x)`                      |
+| `Optional(String)`                  | `z.string().optional()`             |
+| `String.optional()`                 | `z.string().optional()`             |
+| `String.withConstraint(...)`        | `z.string().refine(...)`            |
+| `String.withBrand("Brand")`         | `z.string().brand("Brand")`         |
+| `Type.check(data)`                  | `Type.parse(data)`                  |
+| `Type.guard(data)`                  | `Type.safeParse(data)`              |
+| `Static<typeof Type>`               | `z.infer<typeof Type>`              |
 
 ## Examples
 
@@ -85,13 +78,13 @@ npx jscodeshift -t node_modules/runzod/dist/transform.js --extensions=ts,tsx ./s
 
 ```typescript
 // Before (runtypes)
-import { String, Number, Boolean, Array, Object, type Static } from 'runtypes';
+import { String, Number, Boolean, Array, Object, type Static } from "runtypes";
 
 const User = Object({
   name: String,
   age: Number,
   isActive: Boolean,
-  tags: Array(String)
+  tags: Array(String),
 });
 
 type User = Static<typeof User>;
@@ -101,13 +94,13 @@ if (User.guard(data)) {
 }
 
 // After (zod)
-import { z } from 'zod';
+import { z } from "zod";
 
 const User = z.object({
   name: z.string(),
   age: z.number(),
   isActive: z.boolean(),
-  tags: z.array(z.string())
+  tags: z.array(z.string()),
 });
 
 type User = z.infer<typeof User>;
@@ -122,13 +115,13 @@ if (result.success) {
 
 ```typescript
 // Before (runtypes)
-import { String, withBrand, type Static } from 'runtypes';
+import { String, withBrand, type Static } from "runtypes";
 
 const UserId = String.withBrand("UserId");
 type UserId = Static<typeof UserId>;
 
 // After (zod)
-import { z } from 'zod';
+import { z } from "zod";
 
 const UserId = z.string().brand("UserId");
 type UserId = z.infer<typeof UserId>;
@@ -151,7 +144,7 @@ After running the codemod:
 1. Add "zod" to your dependencies if it's not already there
 2. Review the transformed files manually
 3. Update validation logic based on zod's patterns:
-   - `runtype.guard(data)` becomes `schema.safeParse(data)` 
+   - `runtype.guard(data)` becomes `schema.safeParse(data)`
      (but you'll need to access `result.data` when success is true)
    - Error handling differs between libraries
 4. Run your tests to ensure everything still works

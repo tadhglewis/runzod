@@ -1,5 +1,11 @@
 # runzod
 
+## 2.1.2
+
+### Patch Changes
+
+- 47dba5d: Refactor and fix small bugs
+
 ## 2.1.1
 
 ### Patch Changes

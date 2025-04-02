@@ -976,50 +976,70 @@ function transformer(file: FileInfo, api: API, options: Options) {
    * Post-processes source to fix any remaining issues
    */
   function postProcessSource(source: string) {
-    if (!namespacePrefix) return source;
+    if (namespacePrefix) {
+      source = source
+        .replace(
+          new RegExp(`${namespacePrefix}\\.z\\.([a-zA-Z]+)(\\(\\))`, "g"),
+          "z.$1$2"
+        )
+        .replace(new RegExp(`${namespacePrefix}\\.Static`, "g"), "z.infer")
+        .replace(
+          new RegExp(
+            `${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\.guard\\(([^)]+)\\)`,
+            "g"
+          ),
+          (match, type, arg) => {
+            const lowerType = type.toLowerCase();
+            return `z.${lowerType}().safeParse(${arg}).success`;
+          }
+        )
+        .replace(
+          new RegExp(
+            `${namespacePrefix}\\.Array\\(${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\)`,
+            "g"
+          ),
+          (match, type) => {
+            const lowerType = type.toLowerCase();
+            return `z.array(z.${lowerType}())`;
+          }
+        )
+        .replace(
+          /return\s+z\.([a-zA-Z]+)\(\)\.safeParse\((.*?)\);/g,
+          "return z.$1().safeParse($2).success;"
+        );
+    }
 
     source = source
+      .replace(/z\.boolean\(\)\((.*?)\)/g, "Boolean($1)")
+      .replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Boolean($1)")
       .replace(
-        new RegExp(`${namespacePrefix}\\.z\\.([a-zA-Z]+)(\\(\\))`, "g"),
-        "z.$1$2"
-      )
-      .replace(new RegExp(`${namespacePrefix}\\.Static`, "g"), "z.infer")
-      .replace(
-        new RegExp(
-          `${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\.guard\\(([^)]+)\\)`,
-          "g"
-        ),
-        (match, type, arg) => {
-          const lowerType = type.toLowerCase();
-          return `z.${lowerType}().safeParse(${arg}).success`;
-        }
+        /if\s*\((.*?)&&\s*z\.boolean\(\)\((.*?)\)/g,
+        "if ($1&& Boolean($2)"
       )
       .replace(
-        new RegExp(
-          `${namespacePrefix}\\.Array\\(${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\)`,
-          "g"
-        ),
-        (match, type) => {
-          const lowerType = type.toLowerCase();
-          return `z.array(z.${lowerType}())`;
-        }
+        /if\s*\((.*?)&&\s*z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g,
+        "if ($1&& Boolean($2)"
       )
       .replace(
-        /return\s+z\.([a-zA-Z]+)\(\)\.safeParse\((.*?)\);/g,
-        "return z.$1().safeParse($2).success;"
+        /return\s+(.*?)&&\s*z\.boolean\(\)\((.*?)\)/g,
+        "return $1&& Boolean($2)"
+      )
+      .replace(
+        /return\s+(.*?)&&\s*z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g,
+        "return $1&& Boolean($2)"
       );
 
-    return source
-      .replace(/z\.boolean\(\)\((.*?)\)/g, "Boolean($1)")
+    source = source
       .replace(/z\.string\(\)\((.*?)\)/g, "String($1)")
+      .replace(/z\.string\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "String($1)");
+
+    source = source
       .replace(/z\.number\(\)\((.*?)\)/g, "Number($1)")
+      .replace(/z\.number\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Number($1)");
+
+    source = source
       .replace(/z\.symbol\(\)\((.*?)\)/g, "Symbol($1)")
-
-      .replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Boolean($1)")
-      .replace(/z\.string\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "String($1)")
-      .replace(/z\.number\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Number($1)")
       .replace(/z\.symbol\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Symbol($1)")
-
       .replace(
         /\bconst\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g,
         "const $1 = Symbol($2)"
@@ -1032,13 +1052,16 @@ function transformer(file: FileInfo, api: API, options: Options) {
         /\bvar\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g,
         "var $1 = Symbol($2)"
       )
+      .replace(/\breturn\s+z\.symbol\(([^)]+)\)/g, "return Symbol($1)");
 
-      .replace(/\breturn\s+z\.symbol\(([^)]+)\)/g, "return Symbol($1)")
+    source = source.replace(
+      /\.filter\s*\(\s*z\.boolean\(\)\s*\)/g,
+      ".filter(Boolean)"
+    );
 
-      .replace(/\.filter\s*\(\s*z\.boolean\(\)\s*\)/g, ".filter(Boolean)");
+    return source;
   }
 
-  // Main transformation process
   processImports();
   markJsBuiltins();
   transformStandaloneTypeIdentifiers();
@@ -1049,7 +1072,6 @@ function transformer(file: FileInfo, api: API, options: Options) {
   transformValidationMethods();
   addZodImport();
 
-  // Get the transformed source code and apply post-processing
   let transformedSource = hasModifications ? root.toSource() : file.source;
   transformedSource = postProcessSource(transformedSource);
 

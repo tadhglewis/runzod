@@ -54,10 +54,41 @@ export default function transformer(
       }
     });
 
+  // We'll track which identifiers are used as direct call expressions
+  // These are likely JavaScript casts rather than runtypes
+  const jsCastIdentifiers = new Set<string>();
+  
+  // Find CallExpressions that look like JS casts: String(), Number(), Boolean()
+  root
+    .find(j.CallExpression, {
+      callee: {
+        type: 'Identifier'
+      }
+    })
+    .forEach(path => {
+      if (j.Identifier.check(path.node.callee)) {
+        const name = path.node.callee.name;
+        if (['String', 'Number', 'Boolean'].includes(name)) {
+          jsCastIdentifiers.add(name);
+        }
+      }
+    });
+    
   // Function to transform runtypes to zod
   const transformRuntype = (node: any): any => {
+    // Function to check if this is likely a runtype or a JS cast
+    const isRuntype = (identifier: string): boolean => {
+      // If we saw this identifier used as a JS cast, be cautious about transforming it
+      if (jsCastIdentifiers.has(identifier)) {
+        // Only transform if it's in a context that looks like a runtype (object property, etc.)
+        return false;
+      }
+      
+      return true;
+    };
+    
     // Handle String => z.string()
-    if (j.Identifier.check(node) && node.name === 'String') {
+    if (j.Identifier.check(node) && node.name === 'String' && isRuntype(node.name)) {
       hasModifications = true;
       return j.callExpression(
         j.memberExpression(j.identifier('z'), j.identifier('string')),
@@ -66,7 +97,7 @@ export default function transformer(
     }
     
     // Handle Number => z.number()
-    if (j.Identifier.check(node) && node.name === 'Number') {
+    if (j.Identifier.check(node) && node.name === 'Number' && isRuntype(node.name)) {
       hasModifications = true;
       return j.callExpression(
         j.memberExpression(j.identifier('z'), j.identifier('number')),
@@ -75,7 +106,7 @@ export default function transformer(
     }
     
     // Handle Boolean => z.boolean()
-    if (j.Identifier.check(node) && node.name === 'Boolean') {
+    if (j.Identifier.check(node) && node.name === 'Boolean' && isRuntype(node.name)) {
       hasModifications = true;
       return j.callExpression(
         j.memberExpression(j.identifier('z'), j.identifier('boolean')),
@@ -343,15 +374,74 @@ export default function transformer(
           // Set the transformed arguments
           path.node.arguments = transformedArgs;
           
-          // Now transform the function call itself
-          const funcNode = j.callExpression(
-            j.identifier(funcName),
-            path.node.arguments
-          );
+          // Create a zod equivalent function name based on runtype name
+          let zodFuncName;
+          switch (funcName) {
+            case 'Record':
+            case 'Dictionary':
+              zodFuncName = 'record';
+              break;
+            case 'Object':
+              zodFuncName = 'object';
+              break;
+            case 'Array':
+              zodFuncName = 'array';
+              break;
+            case 'Tuple':
+              // Special case for tuple
+              hasModifications = true;
+              const tupleArgs = j.arrayExpression(path.node.arguments);
+              return j(path).replaceWith(
+                j.callExpression(
+                  j.memberExpression(j.identifier('z'), j.identifier('tuple')),
+                  [tupleArgs]
+                )
+              );
+            case 'Union':
+              // Special case for union
+              hasModifications = true;
+              const unionArgs = j.arrayExpression(path.node.arguments);
+              return j(path).replaceWith(
+                j.callExpression(
+                  j.memberExpression(j.identifier('z'), j.identifier('union')),
+                  [unionArgs]
+                )
+              );
+            case 'Optional':
+              // Special case for optional
+              hasModifications = true;
+              if (path.node.arguments.length === 1) {
+                const arg = path.node.arguments[0];
+                if (arg.type !== 'SpreadElement') {
+                  return j(path).replaceWith(
+                    j.callExpression(
+                      j.memberExpression(
+                        arg,
+                        j.identifier('optional')
+                      ),
+                      []
+                    )
+                  );
+                }
+              }
+              break;
+            case 'Literal':
+              zodFuncName = 'literal';
+              break;
+            default:
+              zodFuncName = funcName.toLowerCase();
+          }
           
-          const transformed = transformRuntype(funcNode);
-          j(path).replaceWith(transformed);
-          hasModifications = true;
+          // Replace with z.object(), z.array(), etc.
+          if (zodFuncName) {
+            hasModifications = true;
+            j(path).replaceWith(
+              j.callExpression(
+                j.memberExpression(j.identifier('z'), j.identifier(zodFuncName)),
+                path.node.arguments
+              )
+            );
+          }
         }
       });
       
@@ -412,13 +502,31 @@ export default function transformer(
         'z.'
       );
       
-      // Replace RT.Array(z.string()) with z.array(z.string())
+      // Replace t.Record({...}) with z.record({...})
+      result = result.replace(
+        new RegExp(`${namespaceIdentifier}\\.Record\\(`, 'g'),
+        'z.record('
+      );
+      
+      // Replace t.Dictionary(...) with z.record(...)
+      result = result.replace(
+        new RegExp(`${namespaceIdentifier}\\.Dictionary\\(`, 'g'),
+        'z.record('
+      );
+      
+      // Replace t.Object({...}) with z.object({...})
+      result = result.replace(
+        new RegExp(`${namespaceIdentifier}\\.Object\\(`, 'g'),
+        'z.object('
+      );
+      
+      // Replace t.Array(z.string()) with z.array(z.string())
       result = result.replace(
         new RegExp(`${namespaceIdentifier}\\.Array\\(`, 'g'),
         'z.array('
       );
       
-      // Replace RT.Tuple(...) with z.tuple([...])
+      // Replace t.Tuple(...) with z.tuple([...])
       result = result.replace(
         new RegExp(`${namespaceIdentifier}\\.Tuple\\(([^)]*)\\)`, 'g'),
         (match, args) => {
@@ -426,20 +534,8 @@ export default function transformer(
           return `z.tuple([${args}])`;
         }
       );
-      
-      // Replace RT.Object({...}) with z.object({...})
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Object\\(`, 'g'),
-        'z.object('
-      );
-      
-      // Replace RT.Record(...) with z.record(...)
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Record\\(`, 'g'),
-        'z.record('
-      );
-      
-      // Replace RT.Union(...) with z.union([...])
+            
+      // Replace t.Union(...) with z.union([...])
       result = result.replace(
         new RegExp(`${namespaceIdentifier}\\.Union\\(([^)]*)\\)`, 'g'),
         (match, args) => {
@@ -447,13 +543,13 @@ export default function transformer(
         }
       );
       
-      // Replace RT.Literal(...) with z.literal(...)
+      // Replace t.Literal(...) with z.literal(...)
       result = result.replace(
         new RegExp(`${namespaceIdentifier}\\.Literal\\(`, 'g'),
         'z.literal('
       );
       
-      // Replace RT.Optional(X) with X.optional()
+      // Replace t.Optional(X) with X.optional()
       result = result.replace(
         new RegExp(`${namespaceIdentifier}\\.Optional\\(([^)]*)\\)`, 'g'),
         (match, arg) => {
@@ -464,22 +560,35 @@ export default function transformer(
       // Fix broken .optional() syntax that might occur from other transformations
       result = result.replace(/(\w+)\(\.optional\(\)\)/g, '$1().optional()');
       
-      // Replace RT.String with z.string()
+      // Replace t.String with z.string()
+      // Use word boundaries to avoid matching substrings
       result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.String`, 'g'),
+        new RegExp(`${namespaceIdentifier}\\.String\\b`, 'g'),
         'z.string()'
       );
       
-      // Replace RT.Number with z.number()
+      // Replace t.Number with z.number()
       result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Number`, 'g'),
+        new RegExp(`${namespaceIdentifier}\\.Number\\b`, 'g'),
         'z.number()'
       );
       
-      // Replace RT.Boolean with z.boolean()
+      // Replace t.Boolean with z.boolean()
       result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Boolean`, 'g'),
+        new RegExp(`${namespaceIdentifier}\\.Boolean\\b`, 'g'),
         'z.boolean()'
+      );
+      
+      // Replace t.Undefined with z.undefined()
+      result = result.replace(
+        new RegExp(`${namespaceIdentifier}\\.Undefined\\b`, 'g'),
+        'z.undefined()'
+      );
+      
+      // Replace t.Null with z.null()
+      result = result.replace(
+        new RegExp(`${namespaceIdentifier}\\.Null\\b`, 'g'),
+        'z.null()'
       );
     }
     

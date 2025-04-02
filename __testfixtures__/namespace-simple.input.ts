@@ -1,15 +1,15 @@
-import z from 'zod';
+import * as t from 'runtypes';
 
 // Using namespace import for basic types
-const StringType = z.string();
-const NumberType = z.number();
-const BooleanType = z.boolean();
+const StringType = t.String;
+const NumberType = t.Number;
+const BooleanType = t.Boolean;
 
 // Simple function call
-const ArrayType = z.array(z.string());
+const ArrayType = t.Array(t.String);
 
 // Nested object
-const Person = z.object({
-  name: z.string(),
-  age: z.number()
+const Person = t.Object({
+  name: t.String,
+  age: t.Number
 });

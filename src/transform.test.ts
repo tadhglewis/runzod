@@ -73,7 +73,9 @@ describe('runtypes to zod transform', () => {
     expect(normalizedOutput).toContain('z.object({');
     expect(normalizedOutput).toContain('z.array(z.string())');
     expect(normalizedOutput).toContain('z.intersection(');
-    expect(normalizedOutput).toContain('z.union(');
+    
+    // Updated to match the new Union to enum transformation for literals
+    expect(normalizedOutput).toContain('z.enum(["admin", "user", "guest"])');
   });
 });
 
@@ -242,8 +244,6 @@ describe('specific transformations', () => {
       .replace(/\bBoolean\b/g, 'z.boolean()')
       .replace(/if\s*\((.*?)\.safeParse\((.*?)\)\)/g, 'if ($1.safeParse($2).success)');
     
-    console.log("DEBUG OUTPUT:", output);
-    
     // Looser assertions that don't rely on exact formatting
     expect(output).toContain('import * as z from "zod"');
     expect(output).toContain('z.object');
@@ -264,5 +264,76 @@ describe('specific transformations', () => {
     // Test for guard -> safeParse.success transformation
     expect(output).toContain('safeParse(data).success');
     expect(output).not.toContain('guard(data)');
+  });
+  
+  test('transforms Union of Literals to z.enum', () => {
+    const source = `
+      import { Union, Literal } from "runtypes";
+      
+      // Define a union of literals
+      const Status = Union(
+        Literal("pending"),
+        Literal("approved"),
+        Literal("rejected")
+      );
+      
+      // With namespace import
+      import * as t from "runtypes";
+      
+      const Role = t.Union(
+        t.Literal("admin"),
+        t.Literal("user"),
+        t.Literal("guest")
+      );
+    `;
+    
+    let output = transform(
+      { source, path: 'test.ts' },
+      { jscodeshift: jscodeshift.withParser('tsx'), stats: () => {} } as any,
+      {}
+    );
+    
+    // Normalize formatting
+    output = output.replace(/\s+/g, ' ').trim();
+    
+    // Check for both regular imports and namespace imports
+    expect(output).toContain('const Status = z.enum(["pending", "approved", "rejected"])');
+    expect(output).toContain('const Role = z.enum(["admin", "user", "guest"])');
+    expect(output).not.toContain('z.union([z.literal');
+    expect(output).not.toContain('z.literal(');
+  });
+  
+  test('preserves JavaScript Boolean() function calls', () => {
+    const source = `
+      import { String, Boolean } from "runtypes";
+      
+      // Define a schema
+      const User = {
+        name: String,
+        active: Boolean
+      };
+      
+      // JavaScript Boolean function in conditional
+      function isValid(data: unknown) {
+        if (data && Boolean(data.id)) {
+          return true;
+        }
+        return false;
+      }
+    `;
+    
+    let output = transform(
+      { source, path: 'test.ts' },
+      { jscodeshift: jscodeshift.withParser('tsx'), stats: () => {} } as any,
+      {}
+    );
+    
+    // Normalize formatting
+    output = output.replace(/\s+/g, ' ').trim();
+    
+    // Check that Boolean type was converted but Boolean() function call was preserved
+    expect(output).toContain('active: z.boolean()');
+    expect(output).toContain('if (data && Boolean(data.id))');
+    expect(output).not.toContain('if (data && z.boolean()(data.id))');
   });
 });

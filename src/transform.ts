@@ -125,6 +125,21 @@ function transformer(file: FileInfo, api: API, options: Options) {
       j(path).remove();
     });
 
+  // First, create a separate transformation to handle JavaScript Boolean() function calls
+  // To avoid them being treated as runtypes Boolean 
+  root
+    .find(j.CallExpression)
+    .filter((path) => {
+      return (
+        j.Identifier.check(path.node.callee) &&
+        path.node.callee.name === "Boolean"
+      );
+    })
+    .forEach((path) => {
+      // Add a property to mark this Boolean as a JavaScript function
+      (path.node.callee as any).__jsBuiltin = true;
+    });
+    
   // Replace standalone type identifiers
   root
     .find(j.Identifier)
@@ -145,7 +160,22 @@ function transformer(file: FileInfo, api: API, options: Options) {
         return;
       }
 
-      // Don't replace the callee part of call expressions
+      // Skip JavaScript built-in Boolean function that we've marked
+      if ((path.node as any).__jsBuiltin) {
+        return;
+      }
+
+      // Don't replace callee part of call expressions like Boolean()
+      if (
+        j.CallExpression.check(path.parent.node) &&
+        path.parent.node.callee === path.node &&
+        path.node.name === "Boolean"
+      ) {
+        // Skip JS Boolean function calls
+        return;
+      }
+
+      // Don't replace the callee part of other call expressions
       if (
         j.CallExpression.check(path.parent.node) &&
         path.parent.node.callee === path.node
@@ -280,7 +310,32 @@ function transformer(file: FileInfo, api: API, options: Options) {
           }
         }
       } else if (callee.name === "Union") {
-        // Union(A, B, C) -> z.union([A, B, C])
+        // Check if all arguments are Literal calls - if so, convert to z.enum([...])
+        const allLiterals = path.node.arguments.every(arg => 
+          j.CallExpression.check(arg) && 
+          j.Identifier.check(arg.callee) && 
+          arg.callee.name === "Literal"
+        );
+        
+        if (allLiterals) {
+          // Extract the literal values
+          const literalValues = path.node.arguments.map(arg => {
+            const literalArg = (arg as CallExpression).arguments[0];
+            // Return the literal value (likely a string or number literal)
+            return literalArg;
+          });
+          
+          // Replace with z.enum([...])
+          j(path).replaceWith(
+            j.callExpression(
+              j.memberExpression(j.identifier("z"), j.identifier("enum")),
+              [j.arrayExpression(literalValues)]
+            )
+          );
+          return;
+        }
+        
+        // Otherwise, standard Union(A, B, C) -> z.union([A, B, C])
         const unionArgs = path.node.arguments.map((arg) => {
           if (j.Identifier.check(arg)) {
             const typeName = arg.name;
@@ -472,7 +527,7 @@ function transformer(file: FileInfo, api: API, options: Options) {
         }
         
         // Handle special cases for type constructors
-        if ((typeName === "Array" || typeName === "Object") && path.node.arguments.length > 0) {
+        if ((typeName === "Array" || typeName === "Object" || typeName === "Union") && path.node.arguments.length > 0) {
           // Extract the argument
           const arg = path.node.arguments[0];
           let argNode = null;
@@ -505,11 +560,43 @@ function transformer(file: FileInfo, api: API, options: Options) {
               j.memberExpression(j.identifier("z"), j.identifier("object")),
               [arg] // Keep the original argument (object literal)
             );
+          } else if (typeName === "Union") {
+            // Check if all arguments are t.Literal calls - if so, convert to z.enum([...])
+            const allLiterals = path.node.arguments.every(arg => 
+              j.CallExpression.check(arg) && 
+              j.MemberExpression.check(arg.callee) && 
+              j.Identifier.check(arg.callee.object) &&
+              (arg.callee.object as Identifier).name === namespacePrefix &&
+              j.Identifier.check(arg.callee.property) &&
+              (arg.callee.property as Identifier).name === "Literal"
+            );
             
-            // Process object properties if they contain namespace references
-            if (j.ObjectExpression.check(arg)) {
-              arg.properties.forEach(prop => {
-                if (
+            if (allLiterals) {
+              // Extract the literal values
+              const literalValues = path.node.arguments.map(arg => {
+                const literalArg = (arg as CallExpression).arguments[0];
+                // Return the literal value (likely a string or number literal)
+                return literalArg;
+              });
+              
+              // Replace with z.enum([...])
+              zodExpr = j.callExpression(
+                j.memberExpression(j.identifier("z"), j.identifier("enum")),
+                [j.arrayExpression(literalValues)]
+              );
+            } else {
+              // Standard Union call
+              zodExpr = j.callExpression(
+                j.memberExpression(j.identifier("z"), j.identifier("union")),
+                [j.arrayExpression(path.node.arguments)]
+              );
+            }
+          }
+          
+          // Process object properties if they contain namespace references
+          if (typeName === "Object" && j.ObjectExpression.check(arg)) {
+            arg.properties.forEach(prop => {
+              if (
                   j.Property.check(prop) && 
                   j.MemberExpression.check(prop.value) &&
                   j.Identifier.check(prop.value.object) &&
@@ -524,7 +611,6 @@ function transformer(file: FileInfo, api: API, options: Options) {
                   }
                 }
               });
-            }
           }
           
           // Replace the entire call expression
@@ -801,6 +887,12 @@ function transformer(file: FileInfo, api: API, options: Options) {
       'return z.$1().safeParse($2).success;'
     );
   }
+  
+  // Fix any mistakenly transformed JavaScript Boolean() function calls
+  transformedSource = transformedSource.replace(
+    /z\.boolean\(\)\((.*?)\)/g,
+    'Boolean($1)'
+  );
 
   return transformedSource;
 }

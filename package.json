@@ -15,7 +15,7 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:codemod": "jscodeshift -t src/transform.ts --parser=ts --dry --print --run-in-band __testfixtures__/basic.input.ts",
+    "test:codemod": "node dist/index.js __testfixtures__ --dry --verbose",
     "prepare": "pnpm build",
     "start": "node dist/index.js",
     "version": "changeset version",

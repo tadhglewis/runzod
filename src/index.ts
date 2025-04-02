@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 
 import path from 'path';
-import { exec } from 'child_process';
 import { promisify } from 'util';
 import { glob } from 'glob';
-
-const execAsync = promisify(exec);
+import { run as jscodeshiftRun } from 'jscodeshift/src/Runner';
 
 async function run() {
   try {
@@ -56,36 +54,45 @@ Options:
     
     console.log(`Found ${files.length} files to process`);
     
-    // Build the jscodeshift command
-    const jscodeshiftBin = path.resolve(__dirname, '../node_modules/.bin/jscodeshift');
+    // Get the transform path
     const transformPath = path.resolve(__dirname, './transform.js');
     
-    const dryRunFlag = isDryRun ? '--dry' : '';
-    const printFlag = isDryRun ? '--print' : '';
+    // Build the jscodeshift options
+    const jscodeshiftOptions = {
+      parser: 'ts',
+      verbose: verbose ? 2 : 0,
+      dry: isDryRun,
+      print: isDryRun,
+      extensions: extensions.join(','),
+      ignorePattern: ['node_modules/**'],
+      babel: false,
+      runInBand: false,
+      silent: !verbose,
+      stdin: false
+    };
     
-    // Since we're processing a directory, we need to use the glob pattern for jscodeshift
-    const command = `${jscodeshiftBin} -t ${transformPath} ${dryRunFlag} ${printFlag} --parser=ts --extensions=${extensions.join(',')} --ignore-pattern="node_modules/**" ${targetPath}`;
-    
-    if (verbose) {
-      console.log(`Executing: ${command}`);
+    // Run jscodeshift directly
+    try {
+      const result = await jscodeshiftRun(
+        transformPath,
+        [targetPath],
+        jscodeshiftOptions
+      );
+      
+      if (result.ok) {
+        console.log('Transformation complete!');
+        console.log('Remember to:');
+        console.log('1. Add "zod" to your dependencies if it\'s not already there');
+        console.log('2. Check the transformed files manually for any issues');
+        console.log('3. Run your tests to ensure everything still works');
+      } else {
+        console.error('Transformation encountered errors.');
+      }
+    } catch (jsError) {
+      console.error('Error in jscodeshift transformation:', jsError);
+      process.exit(1);
     }
     
-    // Run the transformation
-    const { stdout, stderr } = await execAsync(command);
-    
-    if (verbose) {
-      console.log(stdout);
-    }
-    
-    if (stderr && verbose) {
-      console.error(stderr);
-    }
-    
-    console.log('Transformation complete!');
-    console.log('Remember to:');
-    console.log('1. Add "zod" to your dependencies if it\'s not already there');
-    console.log('2. Check the transformed files manually for any issues');
-    console.log('3. Run your tests to ensure everything still works');
   } catch (error) {
     console.error('Error running the transformation:', error);
     process.exit(1);

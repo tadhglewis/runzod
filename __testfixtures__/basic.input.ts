@@ -1,65 +1,43 @@
-import { String, Number, Boolean, Array, Record, Literal, Union, Intersect, Optional, Dictionary } from 'runtypes';
+import { String, Number, Boolean, Array, Tuple, Object, Union, Literal, Optional, Record } from 'runtypes';
 
-// Basic types
-const StringType = String();
-const NumberType = Number();
-const BooleanType = Boolean();
+// Basic primitive types
+const StringType = String;
+const NumberType = Number;
+const BooleanType = Boolean;
 
-// Array type
-const StringArrayType = Array(String());
-
-// Object type
-const PersonType = Record({
-  name: String(),
-  age: Number(),
-  isActive: Boolean(),
-  tags: Array(String()),
-  address: Record({
-    street: String(),
-    city: String(),
-    country: String().optional()
-  })
+// Complex types
+const ArrayType = Array(String);
+const TupleType = Tuple(String, Number, Boolean);
+const ObjectType = Object({
+  name: String,
+  age: Number,
+  isActive: Boolean,
+  tags: Array(String)
 });
 
-// Union type
-const StatusType = Union([
-  Literal('pending'),
-  Literal('active'),
-  Literal('inactive')
-]);
+// Union and Literal types
+const LiteralType = Literal('hello');
+const UnionType = Union(String, Number, Literal(42));
+
+// Optional and constrained types
+const OptionalType = Object({
+  name: String,
+  age: Optional(Number)
+});
+
+const ConstrainedNumber = Number.withConstraint(n => n > 0 || 'Must be positive');
 
 // Dictionary type
-const DictionaryType = Dictionary(String(), Number());
+const DictionaryType = Record(String, Number);
 
-// Optional fields
-const OptionalFieldType = Record({
-  required: String(),
-  optional: Optional(Number())
-});
-
-// Validation example
+// Using types for validation
 function validatePerson(data: unknown) {
-  const result = PersonType.validate(data);
-  
+  const result = ObjectType.validate(data);
   if (result.success) {
     console.log('Valid person:', result.value);
-    return true;
-  }
-  
-  if (result.failure) {
+    return result.value;
+  } else {
     console.error('Invalid person:', result.message);
-    return false;
-  }
-}
-
-// Check example
-function checkPerson(data: unknown) {
-  try {
-    const person = PersonType.check(data);
-    console.log('Valid person:', person);
-    return true;
-  } catch (error) {
-    console.error('Invalid person:', error.message);
-    return false;
+    return null;
   }
 }

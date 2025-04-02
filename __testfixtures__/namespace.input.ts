@@ -1,29 +1,38 @@
-import * as z from "zod";
+import * as RT from 'runtypes';
 
-// Define types using namespace import
-const Person = z.object({
-  name: z.string(),
-  age: z.number(),
-  isActive: z.boolean(),
-  hobbies: z.array(z.string()),
-  address: z.object({
-    street: z.string(),
-    city: z.string(),
-    country: z.string().optional()
-  })
+// Using namespace import
+const StringType = RT.String;
+const NumberType = RT.Number;
+const BooleanType = RT.Boolean;
+
+// Complex types with namespace
+const ArrayType = RT.Array(RT.String);
+const TupleType = RT.Tuple(RT.String, RT.Number, RT.Boolean);
+const ObjectType = RT.Object({
+  name: RT.String,
+  age: RT.Number,
+  isActive: RT.Boolean,
+  tags: RT.Array(RT.String),
+  metadata: RT.Record(RT.String, RT.String)
 });
 
-// Validation example
-function validatePerson(data: unknown) {
-  const result = Person.safeParse(data);
-  
-  if (result.success) {
-    console.log('Valid person:', result.value);
-    return true;
-  }
-  
-  if (!result.success) {
-    console.error('Invalid person:', result.message);
-    return false;
-  }
-}
+// Union and Literal types
+const LiteralType = RT.Literal('hello');
+const UnionType = RT.Union(RT.String, RT.Number, RT.Literal(42));
+
+// Optional types
+const OptionalType = RT.Object({
+  name: RT.String,
+  age: RT.Optional(RT.Number)
+});
+
+// Nested structures
+const NestedType = RT.Object({
+  user: RT.Object({
+    profile: RT.Object({
+      details: RT.Object({
+        favoriteColors: RT.Array(RT.String)
+      })
+    })
+  })
+});

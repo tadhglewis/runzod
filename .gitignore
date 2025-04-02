@@ -1,28 +1,5 @@
-# Dependencies
 node_modules/
-npm-debug.log
-yarn-error.log
-yarn-debug.log
-.pnpm-debug.log
-
-# Build output
 dist/
-lib/
-build/
-
-# Test coverage
 coverage/
-
-# Editor files
 .vscode/
-.idea/
-*.swp
-*.swo
-
-# OS files
 .DS_Store
-Thumbs.db
-
-# Environment variables
-.env
-.env.local

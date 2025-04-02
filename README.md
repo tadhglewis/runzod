@@ -1,13 +1,13 @@
 # RunZod
 
-A codemod to migrate from [runtypes](https://github.com/pelotom/runtypes) to [zod](https://github.com/colinhacks/zod).
+A codemod to migrate from [runtypes](https://github.com/runtypes/runtypes) to [zod](https://github.com/colinhacks/zod).
 
 ## Features
 
 - Transforms imports/requires from runtypes to zod
 - Converts type definitions to zod schemas
-- Updates validation methods and error handling patterns
-- Handles both TypeScript and JavaScript codebases
+- Handles both direct imports and namespace imports
+- Works with TypeScript files
 - Preserves code style and formatting
 
 ## Installation
@@ -28,27 +28,31 @@ runzod src/
 
 # Run on specific files
 runzod src/types.ts src/validation.ts
+
+# Using jscodeshift directly
+npx jscodeshift -t node_modules/runzod/dist/transform.js --extensions=ts,tsx ./src/myfile.ts
 ```
 
 ## Transformations
 
 | Runtypes | Zod |
 |----------|-----|
-| `import { String } from 'runtypes'` | `import { string } from 'zod'` |
-| `import * as t from 'runtypes'` | `import * as z from 'zod'` |
-| `String()` | `z.string()` |
-| `Number()` | `z.number()` |
-| `Boolean()` | `z.boolean()` |
-| `Array(Type)` | `z.array(Type)` |
-| `Record({...})` | `z.object({...})` |
-| `Dictionary(K, V)` | `z.record(K, V)` |
-| `Union([A, B])` | `z.union([A, B])` |
-| `Intersect(A, B)` | `z.intersection(A, B)` |
+| `import { String } from 'runtypes'` | `import z from 'zod'` |
+| `import * as RT from 'runtypes'` | `import z from 'zod'` |
+| `String` | `z.string()` |
+| `Number` | `z.number()` |
+| `Boolean` | `z.boolean()` |
+| `Undefined` | `z.undefined()` |
+| `Null` | `z.null()` |
+| `Array(String)` | `z.array(z.string())` |
+| `Tuple(String, Number)` | `z.tuple([z.string(), z.number()])` |
+| `Object({...})` | `z.object({...})` |
+| `Record(String, Number)` | `z.record(z.string(), z.number())` |
+| `Dictionary(String, Number)` | `z.record(z.string(), z.number())` |
+| `Union(String, Number)` | `z.union([z.string(), z.number()])` |
 | `Literal(x)` | `z.literal(x)` |
-| `Type.optional()` | `Type.optional()` |
-| `Type.check(data)` | `Type.parse(data)` |
-| `Type.validate(data)` | `Type.safeParse(data)` |
-| `result.failure` | `!result.success` |
+| `Optional(String)` | `z.string().optional()` |
+| `Number.withConstraint(...)` | `z.number().refine(...)` |
 
 ## Examples
 
@@ -57,13 +61,14 @@ runzod src/types.ts src/validation.ts
 #### Before (runtypes)
 
 ```typescript
-import { String, Number, Array, Record, Optional } from 'runtypes';
+import { String, Number, Boolean, Array, Object, Optional } from 'runtypes';
 
-const Person = Record({
-  name: String(),
-  age: Number(),
-  hobbies: Array(String()),
-  address: Optional(String())
+const Person = Object({
+  name: String,
+  age: Number,
+  isActive: Boolean,
+  hobbies: Array(String),
+  address: Optional(String)
 });
 
 function validatePerson(data: unknown) {
@@ -71,9 +76,7 @@ function validatePerson(data: unknown) {
   
   if (result.success) {
     return result.value;
-  }
-  
-  if (result.failure) {
+  } else {
     throw new Error(result.message);
   }
 }
@@ -82,24 +85,22 @@ function validatePerson(data: unknown) {
 #### After (zod)
 
 ```typescript
-import { string, number, array, object, optional } from 'zod';
-import * as z from 'zod';
+import z from 'zod';
 
 const Person = z.object({
   name: z.string(),
   age: z.number(),
+  isActive: z.boolean(),
   hobbies: z.array(z.string()),
   address: z.string().optional()
 });
 
 function validatePerson(data: unknown) {
-  const result = Person.safeParse(data);
+  const result = Person.validate(data);
   
   if (result.success) {
     return result.value;
-  }
-  
-  if (!result.success) {
+  } else {
     throw new Error(result.message);
   }
 }
@@ -110,15 +111,15 @@ function validatePerson(data: unknown) {
 #### Before (runtypes)
 
 ```typescript
-import * as t from 'runtypes';
+import * as RT from 'runtypes';
 
-const Person = t.Record({
-  name: t.String(),
-  age: t.Number(),
-  hobbies: t.Array(t.String()),
-  address: t.Record({
-    street: t.String(),
-    city: t.String()
+const Person = RT.Object({
+  name: RT.String,
+  age: RT.Number,
+  hobbies: RT.Array(RT.String),
+  address: RT.Object({
+    street: RT.String,
+    city: RT.String
   })
 });
 
@@ -127,9 +128,7 @@ function validatePerson(data: unknown) {
   
   if (result.success) {
     return result.value;
-  }
-  
-  if (result.failure) {
+  } else {
     throw new Error(result.message);
   }
 }
@@ -138,7 +137,7 @@ function validatePerson(data: unknown) {
 #### After (zod)
 
 ```typescript
-import * as z from 'zod';
+import z from 'zod';
 
 const Person = z.object({
   name: z.string(),
@@ -151,13 +150,11 @@ const Person = z.object({
 });
 
 function validatePerson(data: unknown) {
-  const result = Person.safeParse(data);
+  const result = Person.validate(data);
   
   if (result.success) {
     return result.value;
-  }
-  
-  if (!result.success) {
+  } else {
     throw new Error(result.message);
   }
 }
@@ -175,9 +172,19 @@ npm run build
 # Run tests
 npm test
 
+# Run tests in watch mode
+npm run test:watch
+
 # Test on example files
 npm run test:codemod
 ```
+
+## Notes
+
+- The codemod transforms the schema definitions but doesn't change validation method calls
+- You may need to update your validation logic after transformation:
+  - `runtype.validate(data)` → `schema.safeParse(data)`
+  - Error handling will differ between the libraries
 
 ## License
 

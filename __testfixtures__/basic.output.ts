@@ -1,66 +1,43 @@
-import { string, number, boolean, array, object, literal, union, intersection, optional, record } from 'zod';
-import * as z from 'zod';
+import z from 'zod';
 
-// Basic types
+// Basic primitive types
 const StringType = z.string();
 const NumberType = z.number();
 const BooleanType = z.boolean();
 
-// Array type
-const StringArrayType = z.array(z.string());
-
-// Object type
-const PersonType = z.object({
+// Complex types
+const ArrayType = z.array(z.string());
+const TupleType = z.tuple([z.string(), z.number(), z.boolean()]);
+const ObjectType = z.object({
   name: z.string(),
   age: z.number(),
   isActive: z.boolean(),
-  tags: z.array(z.string()),
-  address: z.object({
-    street: z.string(),
-    city: z.string(),
-    country: z.string().optional()
-  })
+  tags: z.array(z.string())
 });
 
-// Union type
-const StatusType = z.union([
-  z.literal('pending'),
-  z.literal('active'),
-  z.literal('inactive')
-]);
+// Union and Literal types
+const LiteralType = z.literal('hello');
+const UnionType = z.union([z.string(), z.number(), z.literal(42)]);
+
+// Optional and constrained types
+const OptionalType = z.object({
+  name: z.string(),
+  age: z.number().optional()
+});
+
+const ConstrainedNumber = z.number().refine(n => n > 0 || 'Must be positive');
 
 // Dictionary type
 const DictionaryType = z.record(z.string(), z.number());
 
-// Optional fields
-const OptionalFieldType = z.object({
-  required: z.string(),
-  optional: z.number().optional()
-});
-
-// Validation example
+// Using types for validation
 function validatePerson(data: unknown) {
-  const result = PersonType.safeParse(data);
-  
+  const result = ObjectType.validate(data);
   if (result.success) {
     console.log('Valid person:', result.value);
-    return true;
-  }
-  
-  if (!result.success) {
+    return result.value;
+  } else {
     console.error('Invalid person:', result.message);
-    return false;
-  }
-}
-
-// Check example
-function checkPerson(data: unknown) {
-  try {
-    const person = PersonType.parse(data);
-    console.log('Valid person:', person);
-    return true;
-  } catch (error) {
-    console.error('Invalid person:', error.message);
-    return false;
+    return null;
   }
 }

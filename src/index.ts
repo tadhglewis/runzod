@@ -1,60 +1,104 @@
 #!/usr/bin/env node
 
 import path from 'path';
-import { run } from 'jscodeshift/src/Runner';
 import fs from 'fs';
+import { run } from 'jscodeshift/src/Runner';
+import transformer from './transform';
 
-// Get the target paths from command line arguments
-const [,, ...targetPaths] = process.argv;
+// Main function to run the transform
+async function main() {
+  const args = process.argv.slice(2);
+  
+  if (args.length === 0) {
+    console.error('Please provide a path to transform.');
+    console.error('Usage: runzod <path> [options]');
+    console.error('Options:');
+    console.error('  --dry         Dry run (no changes are made to files)');
+    console.error('  --print       Print transformed files to stdout');
+    console.error('  --verbose=n   Show more information about the transform process');
+    process.exit(1);
+  }
 
-if (targetPaths.length === 0) {
-  console.error('Usage: npx runzod <path-to-directory-or-file>');
-  process.exit(1);
-}
+  // Parse path and options
+  const paths = [args[0]];
+  const cmdArgs = args.slice(1);
+  
+  // Default options
+  const options = {
+    dry: cmdArgs.includes('--dry'),
+    print: cmdArgs.includes('--print'),
+    babel: true,
+    parser: 'ts',
+    extensions: 'ts,tsx,js,jsx',
+    ignorePattern: '**/node_modules/**',
+    verbose: 2,
+  };
+  
+  // Get path to the transform
+  const transformPath = path.join(__dirname, 'transform.js');
 
-// Copy the simple-transform.js to dist folder 
-function copyTransformFile() {
-  try {
-    const sourceTransform = path.resolve(__dirname, '../simple-transform.js');
-    const targetTransform = path.join(__dirname, 'transform.js');
+  console.log('Running runzod transform...');
+  
+  // For testing, support direct transformation if it's a single file and --direct flag is passed
+  if (paths.length === 1 && cmdArgs.includes('--direct')) {
+    const filePath = paths[0];
     
-    if (fs.existsSync(sourceTransform)) {
-      fs.copyFileSync(sourceTransform, targetTransform);
-      return targetTransform;
+    try {
+      if (!fs.existsSync(filePath)) {
+        console.error(`File not found: ${filePath}`);
+        process.exit(1);
+      }
+      
+      const source = fs.readFileSync(filePath, 'utf8');
+      const jscodeshift = require('jscodeshift');
+      const api = {
+        jscodeshift,
+        stats: () => {},
+        j: jscodeshift,
+        report: () => {}
+      };
+      
+      const transformed = transformer(
+        { path: filePath, source },
+        api,
+        { parser: 'ts' }
+      );
+      
+      if (options.print) {
+        console.log(transformed);
+      }
+      
+      if (!options.dry) {
+        fs.writeFileSync(filePath, transformed);
+        console.log(`Successfully transformed ${filePath}`);
+      } else {
+        console.log(`Dry run - no changes made to ${filePath}`);
+      }
+      
+      return;
+    } catch (err) {
+      console.error('Error during transformation:', err);
+      process.exit(1);
     }
-  } catch (error) {
-    console.warn('Could not copy transform file:', error);
   }
   
-  // Fallback to the default location
-  return path.join(__dirname, 'transform.js');
+  // Use jscodeshift runner
+  const result = await run(transformPath, paths, options);
+  
+  if (result.error) {
+    console.error('Error:', result.error);
+    process.exit(1);
+  }
+  
+  console.log(`
+Transform complete:
+  - Files processed: ${result.stats?.filesRead || 0}
+  - Files changed: ${result.stats?.filesChanged || 0}
+  - Errors: ${result.stats?.errors || 0}
+`);
 }
 
-// Run the codemod
-const transformPath = copyTransformFile();
-const options = {
-  dry: false,
-  print: false,
-  babel: true,
-  extensions: 'ts,tsx,js,jsx',
-  ignorePattern: ['**/node_modules/**', '**/dist/**'],
-  ignoreConfig: undefined,
-  silent: false,
-  parser: 'ts',
-  verbose: 1,
-  runInBand: false,
-};
-
-console.log(`Running runtypes to zod migration on: ${targetPaths.join(', ')}`);
-console.log('This will modify your files in place. Make sure you have a backup or version control.');
-
-run(transformPath, targetPaths, options)
-  .then(results => {
-    console.log('Migration completed!');
-    console.log(`Files processed: ${results.ok + results.nochange + results.skip + results.error}`);
-    console.log(`Files changed: ${results.ok}`);
-  })
-  .catch(error => {
-    console.error('Error during migration:', error);
-    process.exit(1);
-  });
+main().catch(error => {
+  console.error('Unexpected error:', error);
+  process.exit(1);
+});

@@ -3,6 +3,7 @@
 ## Commands
 - Build: `npm run build`
 - Test: `npm test`
+- Test (watch mode): `npm run test:watch`
 - Run codemod test: `npm run test:codemod`
 - Run: `npm start <path>`
 - Lint: `npm run lint` (add eslint to setup linting)

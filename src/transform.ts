@@ -1,612 +1,735 @@
-import { API, FileInfo, Options } from 'jscodeshift';
+import { API, FileInfo, Options, Transform } from 'jscodeshift';
 
 /**
- * Codemod to transform runtypes to zod
+ * Transforms runtypes code to zod
  */
-export default function transformer(
-  file: FileInfo,
-  api: API,
-  options: Options
-) {
+const transform: Transform = (file: FileInfo, api: API, options: Options) => {
   const j = api.jscodeshift;
   const root = j(file.source);
   
-  let hasModifications = false;
-  let hasZodImport = false;
-  let namespaceIdentifier: string | null = null;
-
-  // Pre-check for namespace imports to prepare for transformation
-  root
-    .find(j.ImportDeclaration)
-    .filter(path => {
-      const importPath = path.node.source.value;
-      return typeof importPath === 'string' && importPath === 'runtypes';
-    })
-    .find(j.ImportNamespaceSpecifier)
-    .forEach(path => {
-      if (path.node.local && typeof path.node.local.name === 'string') {
-        namespaceIdentifier = path.node.local.name;
-      }
-    });
-
-  // Handle imports: replace runtypes import with zod
-  root
-    .find(j.ImportDeclaration)
-    .forEach(path => {
-      const importPath = path.node.source.value;
-      
-      if (typeof importPath === 'string' && importPath === 'runtypes') {
-        // Check if any runtypes imports are used
-        const specifiers = path.node.specifiers;
-        if (specifiers && specifiers.length > 0) {
-          hasModifications = true;
-          
-          // Create a zod import statement
-          const zodImport = j.importDeclaration(
-            [j.importDefaultSpecifier(j.identifier('z'))],
-            j.literal('zod')
-          );
-          
-          // Replace the runtypes import with zod
-          j(path).replaceWith(zodImport);
-          hasZodImport = true;
-        }
-      }
-    });
-
-  // We'll track which identifiers are used as direct call expressions
-  // These are likely JavaScript casts rather than runtypes
-  const jsCastIdentifiers = new Set<string>();
+  // Track whether the file was modified
+  let modified = false;
   
-  // Find CallExpressions that look like JS casts: String(), Number(), Boolean()
-  root
-    .find(j.CallExpression, {
-      callee: {
-        type: 'Identifier'
+  // Check if the file imports from runtypes
+  const runtypesImports = root.find(j.ImportDeclaration, {
+    source: { value: 'runtypes' }
+  });
+  
+  // If no runtypes imports, don't modify
+  if (runtypesImports.length === 0) {
+    return file.source;
+  }
+  
+  // Get runtype namespaces if any
+  const namespaces: string[] = [];
+  
+  // Find namespace imports - e.g., import * as t from 'runtypes'
+  root.find(j.ImportNamespaceSpecifier).forEach(path => {
+    if (
+      path.parent.value.type === 'ImportDeclaration' &&
+      path.parent.value.source.value === 'runtypes'
+    ) {
+      if (path.value.local && path.value.local.name) {
+        namespaces.push(path.value.local.name as string);
       }
-    })
-    .forEach(path => {
-      if (j.Identifier.check(path.node.callee)) {
-        const name = path.node.callee.name;
-        if (['String', 'Number', 'Boolean'].includes(name)) {
-          jsCastIdentifiers.add(name);
-        }
+    }
+  });
+  
+  // Initialize a set to keep track of Runtype identifiers used for JavaScript casts
+  const jsCastNodes = new Set<string>();
+  
+  // Find JavaScript casts (String(), Number(), Boolean()) that should NOT be transformed
+  root.find(j.CallExpression, {
+    callee: {
+      type: 'Identifier',
+      name: (name: string) => ['String', 'Number', 'Boolean'].includes(name)
+    }
+  }).forEach(path => {
+    // If the call isn't part of a member expression (like String.withConstraint)
+    // and isn't inside an object property (like { name: String })
+    if (
+      path.parent.value.type !== 'MemberExpression' &&
+      path.parent.value.type !== 'Property'
+    ) {
+      const calleeName = (path.value.callee as any).name;
+      if (calleeName) {
+        jsCastNodes.add(calleeName);
       }
+    }
+  });
+  
+  // Transform imports
+  modified = transformImports(j, root, namespaces, modified);
+  
+  // Transform Runtype.validate() to zodSchema.safeParse()
+  modified = transformValidation(j, root, namespaces, modified);
+  
+  // Transform Runtype.check() to zodSchema.parse()
+  modified = transformCheck(j, root, namespaces, modified);
+  
+  // Transform runtypes Static to zod infer
+  modified = transformStatic(j, root, namespaces, modified);
+  
+  // Transform ValidationError to ZodError
+  modified = transformValidationError(j, root, namespaces, modified);
+  
+  // Transform runtype assertions to zod schemas
+  modified = transformRuntypeToZod(j, root, namespaces, jsCastNodes, modified);
+  
+  if (!modified) {
+    return file.source;
+  }
+  
+  return root.toSource(options.printOptions || { quote: 'single' });
+};
+
+/**
+ * Transforms runtypes imports to zod
+ */
+function transformImports(
+  j: any, 
+  root: any, 
+  namespaces: string[],
+  modified: boolean
+): boolean {
+  // Transform named imports
+  const namedImports = root.find(j.ImportDeclaration, {
+    source: { value: 'runtypes' }
+  });
+  
+  if (namedImports.length > 0) {
+    namedImports.replaceWith(() => {
+      return j.importDeclaration(
+        [j.importDefaultSpecifier(j.identifier('z'))],
+        j.literal('zod')
+      );
     });
+    modified = true;
+  }
+  
+  return modified;
+}
+
+/**
+ * Transforms .validate() to .safeParse()
+ */
+function transformValidation(
+  j: any, 
+  root: any, 
+  namespaces: string[],
+  modified: boolean
+): boolean {
+  // Find .validate() calls
+  root.find(j.MemberExpression, {
+    property: { name: 'validate' }
+  }).forEach((path: any) => {
+    // Replace .validate() with .safeParse()
+    path.value.property = j.identifier('safeParse');
+    modified = true;
     
-  // Function to transform runtypes to zod
-  const transformRuntype = (node: any): any => {
-    // Function to check if this is likely a runtype or a JS cast
-    const isRuntype = (identifier: string): boolean => {
-      // If we saw this identifier used as a JS cast, be cautious about transforming it
-      if (jsCastIdentifiers.has(identifier)) {
-        // Only transform if it's in a context that looks like a runtype (object property, etc.)
-        return false;
-      }
-      
-      return true;
-    };
-    
-    // Handle String => z.string()
-    if (j.Identifier.check(node) && node.name === 'String' && isRuntype(node.name)) {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('string')),
-        []
-      );
-    }
-    
-    // Handle Number => z.number()
-    if (j.Identifier.check(node) && node.name === 'Number' && isRuntype(node.name)) {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('number')),
-        []
-      );
-    }
-    
-    // Handle Boolean => z.boolean()
-    if (j.Identifier.check(node) && node.name === 'Boolean' && isRuntype(node.name)) {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('boolean')),
-        []
-      );
-    }
-    
-    // Handle Undefined => z.undefined()
-    if (j.Identifier.check(node) && node.name === 'Undefined') {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('undefined')),
-        []
-      );
-    }
-    
-    // Handle Null => z.null()
-    if (j.Identifier.check(node) && node.name === 'Null') {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('null')),
-        []
-      );
-    }
-    
-    // Handle Literal() => z.literal()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Literal'
-    ) {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('literal')),
-        node.arguments
-      );
-    }
-    
-    // Handle Array() => z.array()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Array'
-    ) {
-      hasModifications = true;
-      if (node.arguments.length === 1) {
-        return j.callExpression(
-          j.memberExpression(j.identifier('z'), j.identifier('array')),
-          [transformRuntype(node.arguments[0])]
-        );
-      }
-    }
-    
-    // Handle Tuple() => z.tuple()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Tuple'
-    ) {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('tuple')),
-        [j.arrayExpression(node.arguments.map((arg: any) => transformRuntype(arg)))]
-      );
-    }
-    
-    // Handle Object() => z.object()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Object'
-    ) {
-      hasModifications = true;
-      if (node.arguments.length === 1 && j.ObjectExpression.check(node.arguments[0])) {
-        const properties: any[] = node.arguments[0].properties.map((prop: any) => {
-          return j.property(
-            'init',  // Always use 'init' for object properties
-            prop.key,
-            transformRuntype(prop.value)
-          );
+    // Find corresponding result.success and result.value patterns
+    const parent = path.parent;
+    if (parent.value.type === 'CallExpression') {
+      const resultVarName = getResultVariableName(parent);
+      if (resultVarName) {
+        // Find result.value references and replace with result.data
+        root.find(j.MemberExpression, {
+          object: { name: resultVarName },
+          property: { name: 'value' }
+        }).forEach((resultPath: any) => {
+          resultPath.value.property = j.identifier('data');
+          modified = true;
         });
         
-        return j.callExpression(
-          j.memberExpression(j.identifier('z'), j.identifier('object')),
-          [j.objectExpression(properties)]
-        );
+        // Find result.message references and replace with result.error
+        root.find(j.MemberExpression, {
+          object: { name: resultVarName },
+          property: { name: 'message' }
+        }).forEach((resultPath: any) => {
+          resultPath.value.property = j.identifier('error');
+          modified = true;
+        });
       }
     }
-    
-    // Handle Union() => z.union()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Union'
-    ) {
-      hasModifications = true;
-      return j.callExpression(
-        j.memberExpression(j.identifier('z'), j.identifier('union')),
-        [j.arrayExpression(node.arguments.map((arg: any) => transformRuntype(arg)))]
-      );
-    }
-    
-    // Handle Record() => z.record()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Record'
-    ) {
-      hasModifications = true;
-      if (node.arguments.length === 2) {
-        return j.callExpression(
-          j.memberExpression(j.identifier('z'), j.identifier('record')),
-          [
-            transformRuntype(node.arguments[0]),
-            transformRuntype(node.arguments[1])
-          ]
-        );
-      }
-    }
-    
-    // Handle Dictionary() => z.record() (since zod uses record for dictionaries)
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Dictionary'
-    ) {
-      hasModifications = true;
-      if (node.arguments.length === 2) {
-        return j.callExpression(
-          j.memberExpression(j.identifier('z'), j.identifier('record')),
-          [
-            transformRuntype(node.arguments[0]),
-            transformRuntype(node.arguments[1])
-          ]
-        );
-      }
-    }
-    
-    // Handle Optional() => z.optional()
-    if (
-      j.CallExpression.check(node) &&
-      j.Identifier.check(node.callee) &&
-      node.callee.name === 'Optional'
-    ) {
-      hasModifications = true;
-      if (node.arguments.length === 1) {
-        const innerType: any = transformRuntype(node.arguments[0]);
-        return j.callExpression(
-          j.memberExpression(innerType, j.identifier('optional')),
-          []
-        );
-      }
-    }
-    
-    // Handle withConstraint => refine
-    if (
-      j.CallExpression.check(node) &&
-      j.MemberExpression.check(node.callee) &&
-      j.Identifier.check(node.callee.property) &&
-      node.callee.property.name === 'withConstraint'
-    ) {
-      hasModifications = true;
-      const baseType: any = transformRuntype(node.callee.object);
-      return j.callExpression(
-        j.memberExpression(baseType, j.identifier('refine')),
-        node.arguments
-      );
-    }
-    
-    // If no transformation was applied, return the original node
-    return node;
-  };
-
-  // Process identifiers and call expressions - standard approach
-  // Find and transform all call expressions that might be runtypes
-  root
-    .find(j.CallExpression)
-    .forEach(path => {
-      const transformed = transformRuntype(path.node);
-      if (transformed !== path.node) {
-        j(path).replaceWith(transformed);
-      }
-    });
+  });
   
-  // Handle identifiers (like String, Number, etc.)
-  root
-    .find(j.Identifier)
-    .filter(path => {
-      const name = path.node.name;
-      return ['String', 'Number', 'Boolean', 'Undefined', 'Null'].includes(name);
-    })
-    .forEach(path => {
-      // Make sure it's not part of a property access or already handled
+  return modified;
+}
+
+/**
+ * Transforms .check() to .parse()
+ */
+function transformCheck(
+  j: any, 
+  root: any, 
+  namespaces: string[],
+  modified: boolean
+): boolean {
+  // Find .check() calls
+  root.find(j.MemberExpression, {
+    property: { name: 'check' }
+  }).forEach((path: any) => {
+    // Replace .check() with .parse()
+    path.value.property = j.identifier('parse');
+    modified = true;
+  });
+  
+  return modified;
+}
+
+/**
+ * Transforms t.Static<> to z.infer<>
+ */
+function transformStatic(
+  j: any, 
+  root: any, 
+  namespaces: string[],
+  modified: boolean
+): boolean {
+  // Process direct Static references
+  root.find(j.TSTypeReference, {
+    typeName: {
+      type: 'TSQualifiedName',
+      left: { name: (name: string) => namespaces.includes(name) },
+      right: { name: 'Static' }
+    }
+  }).forEach((path: any) => {
+    path.value.typeName = j.tsQualifiedName(
+      j.identifier('z'),
+      j.identifier('infer')
+    );
+    modified = true;
+  });
+  
+  // Process non-namespaced Static references
+  root.find(j.TSTypeReference, {
+    typeName: { name: 'Static' }
+  }).forEach((path: any) => {
+    path.value.typeName = j.tsQualifiedName(
+      j.identifier('z'),
+      j.identifier('infer')
+    );
+    modified = true;
+  });
+  
+  return modified;
+}
+
+/**
+ * Transforms ValidationError to ZodError
+ */
+function transformValidationError(
+  j: any, 
+  root: any, 
+  namespaces: string[],
+  modified: boolean
+): boolean {
+  // Find instanceof ValidationError checks
+  namespaces.forEach(namespace => {
+    root.find(j.BinaryExpression, {
+      operator: 'instanceof',
+      right: {
+        type: 'MemberExpression',
+        object: { name: namespace },
+        property: { name: 'ValidationError' }
+      }
+    }).forEach((path: any) => {
+      path.value.right = j.memberExpression(
+        j.identifier('z'),
+        j.identifier('ZodError')
+      );
+      modified = true;
+    });
+  });
+  
+  // Direct ValidationError references
+  root.find(j.MemberExpression, {
+    object: { name: (name: string) => namespaces.includes(name) },
+    property: { name: 'ValidationError' }
+  }).forEach((path: any) => {
+    path.value.object = j.identifier('z');
+    path.value.property = j.identifier('ZodError');
+    modified = true;
+  });
+  
+  return modified;
+}
+
+/**
+ * Transforms runtype assertions to zod schemas
+ */
+function transformRuntypeToZod(
+  j: any, 
+  root: any, 
+  namespaces: string[],
+  jsCastNodes: Set<string>,
+  modified: boolean
+): boolean {
+  // Map of runtypes to zod equivalents
+  const typeMapping: Record<string, string> = {
+    String: 'string',
+    Number: 'number',
+    Boolean: 'boolean',
+    Array: 'array',
+    Tuple: 'tuple',
+    Object: 'object',
+    Record: 'record', // Pre v7 for objects
+    Union: 'union',
+    Literal: 'literal',
+    Optional: 'optional',
+  };
+  
+  // Transform direct type references without namespace (String, Number, Boolean, etc.)
+  Object.keys(typeMapping).forEach(runtypeKey => {
+    // Skip JavaScript cast functions
+    if (jsCastNodes.has(runtypeKey)) {
+      return;
+    }
+    
+    // Direct usage - e.g., String, Number, etc.
+    root.find(j.Identifier, { name: runtypeKey }).forEach((path: any) => {
+      // Skip if part of import statement, other identifiers or javascript casts
       if (
-        !j.MemberExpression.check(path.parent.node) ||
-        path.parent.node.object !== path.node
+        path.parent.value.type === 'ImportSpecifier' || 
+        path.parent.value.type === 'TSQualifiedName' ||
+        path.name === 'property' ||
+        jsCastNodes.has(path.value.name)
       ) {
-        const transformed = transformRuntype(path.node);
-        if (transformed !== path.node) {
-          j(path).replaceWith(transformed);
-        }
+        return;
+      }
+      
+      // Handle direct type references
+      if (path.parent.value.type !== 'CallExpression' && path.parent.value.type !== 'MemberExpression') {
+        // Replace with z.method()
+        j(path).replaceWith(
+          j.callExpression(
+            j.memberExpression(j.identifier('z'), j.identifier(typeMapping[runtypeKey])),
+            []
+          )
+        );
+        modified = true;
       }
     });
-
-  // Handle namespaced imports (RT.String, RT.Number, etc.)
-  if (namespaceIdentifier) {
-    // Namespace member transform function
-    const transformNamespaceMember = (prop: string): any => {
-      if (['String', 'Number', 'Boolean', 'Undefined', 'Null'].includes(prop)) {
-        return j.callExpression(
-          j.memberExpression(j.identifier('z'), j.identifier(prop.toLowerCase())),
-          []
+    
+    // Invocations - e.g., String.withConstraint(), Array(String), etc.
+    root.find(j.CallExpression, {
+      callee: { name: runtypeKey }
+    }).forEach((path: any) => {
+      // Skip JavaScript casts like String(value)
+      if (jsCastNodes.has(runtypeKey)) {
+        return;
+      }
+      
+      // Create z.method() call
+      const zodMethod = typeMapping[runtypeKey];
+      let newCallee = j.memberExpression(j.identifier('z'), j.identifier(zodMethod));
+      
+      // Handle arguments based on type
+      if (runtypeKey === 'Array') {
+        // Array(Type) -> z.array(z.type())
+        j(path).replaceWith(
+          j.callExpression(newCallee, [transformArgument(j, path.value.arguments[0], namespaces, jsCastNodes)])
+        );
+      } else if (runtypeKey === 'Tuple') {
+        // Tuple(A, B, C) -> z.tuple([z.a(), z.b(), z.c()])
+        const transformedArgs = path.value.arguments.map((arg: any) => 
+          transformArgument(j, arg, namespaces, jsCastNodes)
+        );
+        j(path).replaceWith(
+          j.callExpression(newCallee, [j.arrayExpression(transformedArgs)])
+        );
+      } else if (runtypeKey === 'Union') {
+        // Union(A, B, C) -> z.union([z.a(), z.b(), z.c()])
+        const transformedArgs = path.value.arguments.map((arg: any) => 
+          transformArgument(j, arg, namespaces, jsCastNodes)
+        );
+        j(path).replaceWith(
+          j.callExpression(newCallee, [j.arrayExpression(transformedArgs)])
+        );
+      } else if (runtypeKey === 'Literal') {
+        // Literal(value) -> z.literal(value)
+        j(path).replaceWith(
+          j.callExpression(newCallee, path.value.arguments)
+        );
+      } else if (runtypeKey === 'Optional') {
+        // Optional(Type) -> z.type().optional()
+        const transformedArg = transformArgument(j, path.value.arguments[0], namespaces, jsCastNodes);
+        j(path).replaceWith(
+          j.callExpression(
+            j.memberExpression(transformedArg, j.identifier('optional')),
+            []
+          )
+        );
+      } else if (runtypeKey === 'Record') {
+        // Handle both dictionary Record(KeyType, ValueType) and pre-v7 object Record syntax
+        if (path.value.arguments.length === 1 && path.value.arguments[0].type === 'ObjectExpression') {
+          // Pre-v7 Record({...}) -> z.object({...})
+          const objProps = processObjectProperties(j, path.value.arguments[0], namespaces, jsCastNodes);
+          j(path).replaceWith(
+            j.callExpression(
+              j.memberExpression(j.identifier('z'), j.identifier('object')),
+              [j.objectExpression(objProps)]
+            )
+          );
+        } else if (path.value.arguments.length === 2) {
+          // Record(KeyType, ValueType) -> z.record(z.keyType(), z.valueType())
+          const keyType = transformArgument(j, path.value.arguments[0], namespaces, jsCastNodes);
+          const valueType = transformArgument(j, path.value.arguments[1], namespaces, jsCastNodes);
+          j(path).replaceWith(
+            j.callExpression(newCallee, [keyType, valueType])
+          );
+        }
+      } else if (runtypeKey === 'Object') {
+        // Object({...}) -> z.object({...})
+        if (path.value.arguments.length === 1 && path.value.arguments[0].type === 'ObjectExpression') {
+          const objProps = processObjectProperties(j, path.value.arguments[0], namespaces, jsCastNodes);
+          j(path).replaceWith(
+            j.callExpression(newCallee, [j.objectExpression(objProps)])
+          );
+        }
+      } else {
+        // Default case
+        j(path).replaceWith(
+          j.callExpression(newCallee, path.value.arguments)
         );
       }
-      return null;
-    };
+      
+      modified = true;
+    });
     
-    // Handle direct namespace references like RT.String
-    root
-      .find(j.MemberExpression, {
-        object: { name: namespaceIdentifier }
-      })
-      .forEach(path => {
-        if (j.Identifier.check(path.node.property)) {
-          const propName = path.node.property.name;
-          const transformed = transformNamespaceMember(propName);
-          
-          if (transformed) {
-            j(path).replaceWith(transformed);
-            hasModifications = true;
-          }
+    // withConstraint -> refine
+    root.find(j.MemberExpression, {
+      object: { name: runtypeKey },
+      property: { name: 'withConstraint' }
+    }).forEach((path: any) => {
+      // Replace withConstraint with refine
+      path.value.object = j.callExpression(
+        j.memberExpression(j.identifier('z'), j.identifier(typeMapping[runtypeKey])),
+        []
+      );
+      path.value.property = j.identifier('refine');
+      modified = true;
+    });
+  });
+  
+  // Transform namespaced type references (t.String, t.Number, etc.)
+  namespaces.forEach(namespace => {
+    Object.keys(typeMapping).forEach(runtypeKey => {
+      // t.TypeName -> z.typename()
+      root.find(j.MemberExpression, {
+        object: { name: namespace },
+        property: { name: runtypeKey }
+      }).forEach((path: any) => {
+        // Skip if it's part of a larger member expression like t.String.withConstraint
+        if (path.parent.value.type === 'MemberExpression' && path.parent.value.object === path.value) {
+          return;
         }
-      });
-    
-    // Handle RT.Array(RT.String) patterns
-    root
-      .find(j.CallExpression, {
-        callee: {
-          type: 'MemberExpression',
-          object: { name: namespaceIdentifier }
-        }
-      })
-      .forEach(path => {
-        if (j.MemberExpression.check(path.node.callee) && 
-            j.Identifier.check(path.node.callee.property)) {
+        
+        // Handle special cases based on usage
+        if (path.parent.value.type === 'CallExpression' && path.parent.value.callee === path.value) {
+          const callExpr = path.parent.value;
           
-          const funcName = path.node.callee.property.name;
-          
-          // Transform any arguments that are namespace references
-          const transformedArgs = path.node.arguments.map((arg: any) => {
-            if (j.MemberExpression.check(arg) && 
-                j.Identifier.check(arg.object) && 
-                arg.object.name === namespaceIdentifier &&
-                j.Identifier.check(arg.property)) {
-              
-              const argPropName = arg.property.name;
-              const transformed = transformNamespaceMember(argPropName);
-              if (transformed) {
-                return transformed;
-              }
-            }
-            return arg;
-          });
-          
-          // Set the transformed arguments
-          path.node.arguments = transformedArgs;
-          
-          // Create a zod equivalent function name based on runtype name
-          let zodFuncName;
-          switch (funcName) {
-            case 'Record':
-            case 'Dictionary':
-              // Set hasModifications to true to ensure record transformation happens
-              hasModifications = true;
-              zodFuncName = 'record';
-              break;
-            case 'Object':
-              zodFuncName = 'object';
-              break;
-            case 'Array':
-              zodFuncName = 'array';
-              break;
-            case 'Tuple':
-              // Special case for tuple
-              hasModifications = true;
-              const tupleArgs = j.arrayExpression(path.node.arguments);
-              return j(path).replaceWith(
-                j.callExpression(
-                  j.memberExpression(j.identifier('z'), j.identifier('tuple')),
-                  [tupleArgs]
-                )
-              );
-            case 'Union':
-              // Special case for union
-              hasModifications = true;
-              const unionArgs = j.arrayExpression(path.node.arguments);
-              return j(path).replaceWith(
-                j.callExpression(
-                  j.memberExpression(j.identifier('z'), j.identifier('union')),
-                  [unionArgs]
-                )
-              );
-            case 'Optional':
-              // Special case for optional
-              hasModifications = true;
-              if (path.node.arguments.length === 1) {
-                const arg = path.node.arguments[0];
-                if (arg.type !== 'SpreadElement') {
-                  return j(path).replaceWith(
-                    j.callExpression(
-                      j.memberExpression(
-                        arg,
-                        j.identifier('optional')
-                      ),
-                      []
-                    )
-                  );
-                }
-              }
-              break;
-            case 'Literal':
-              zodFuncName = 'literal';
-              break;
-            case 'static':
-              // Transform t.static to z.infer
-              hasModifications = true;
-              zodFuncName = 'infer';
-              break;
-            default:
-              zodFuncName = funcName.toLowerCase();
-          }
-          
-          // Replace with z.object(), z.array(), etc.
-          if (zodFuncName) {
-            hasModifications = true;
-            j(path).replaceWith(
+          // Special handling for different runtype functions
+          if (runtypeKey === 'Array') {
+            // t.Array(t.String) -> z.array(z.string())
+            j(path.parent).replaceWith(
               j.callExpression(
-                j.memberExpression(j.identifier('z'), j.identifier(zodFuncName)),
-                path.node.arguments
+                j.memberExpression(j.identifier('z'), j.identifier('array')),
+                [transformArgument(j, callExpr.arguments[0], namespaces, jsCastNodes)]
+              )
+            );
+          } else if (runtypeKey === 'Tuple') {
+            // t.Tuple(t.String, t.Number) -> z.tuple([z.string(), z.number()])
+            const transformedArgs = callExpr.arguments.map((arg: any) => 
+              transformArgument(j, arg, namespaces, jsCastNodes)
+            );
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(j.identifier('z'), j.identifier('tuple')),
+                [j.arrayExpression(transformedArgs)]
+              )
+            );
+          } else if (runtypeKey === 'Union') {
+            // t.Union(t.String, t.Number) -> z.union([z.string(), z.number()])
+            const transformedArgs = callExpr.arguments.map((arg: any) => 
+              transformArgument(j, arg, namespaces, jsCastNodes)
+            );
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(j.identifier('z'), j.identifier('union')),
+                [j.arrayExpression(transformedArgs)]
+              )
+            );
+          } else if (runtypeKey === 'Optional') {
+            // t.Optional(t.String) -> z.string().optional()
+            const transformedArg = transformArgument(j, callExpr.arguments[0], namespaces, jsCastNodes);
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(transformedArg, j.identifier('optional')),
+                []
+              )
+            );
+          } else if (runtypeKey === 'Record' && callExpr.arguments.length === 1 && 
+                     callExpr.arguments[0].type === 'ObjectExpression') {
+            // Handle pre-v7 syntax: t.Record({...}) -> z.object({...})
+            const objProps = processObjectProperties(j, callExpr.arguments[0], namespaces, jsCastNodes);
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(j.identifier('z'), j.identifier('object')),
+                [j.objectExpression(objProps)]
+              )
+            );
+          } else if (runtypeKey === 'Record' && callExpr.arguments.length === 2) {
+            // Dictionary: t.Record(t.String, t.Number) -> z.record(z.string(), z.number())
+            const keyType = transformArgument(j, callExpr.arguments[0], namespaces, jsCastNodes);
+            const valueType = transformArgument(j, callExpr.arguments[1], namespaces, jsCastNodes);
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(j.identifier('z'), j.identifier('record')),
+                [keyType, valueType]
+              )
+            );
+          } else if (runtypeKey === 'Object') {
+            // t.Object({...}) -> z.object({...})
+            if (callExpr.arguments.length === 1 && callExpr.arguments[0].type === 'ObjectExpression') {
+              const objProps = processObjectProperties(j, callExpr.arguments[0], namespaces, jsCastNodes);
+              j(path.parent).replaceWith(
+                j.callExpression(
+                  j.memberExpression(j.identifier('z'), j.identifier('object')),
+                  [j.objectExpression(objProps)]
+                )
+              );
+            }
+          } else if (runtypeKey === 'Literal') {
+            // t.Literal(value) -> z.literal(value)
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(j.identifier('z'), j.identifier('literal')),
+                callExpr.arguments
+              )
+            );
+          } else {
+            // Default method call
+            j(path.parent).replaceWith(
+              j.callExpression(
+                j.memberExpression(
+                  j.identifier('z'), 
+                  j.identifier(typeMapping[runtypeKey])
+                ),
+                callExpr.arguments
               )
             );
           }
+        } else {
+          // Direct reference, e.g., { name: t.String }
+          j(path).replaceWith(
+            j.callExpression(
+              j.memberExpression(
+                j.identifier('z'), 
+                j.identifier(typeMapping[runtypeKey])
+              ),
+              []
+            )
+          );
         }
+        
+        modified = true;
       });
       
-    // Process ObjectExpression arguments that have nested RT references
-    root
-      .find(j.ObjectExpression)
-      .forEach(path => {
-        path.node.properties.forEach((prop: any) => {
-          if (prop.value && 
-              j.MemberExpression.check(prop.value) && 
-              j.Identifier.check(prop.value.object) &&
-              prop.value.object.name === namespaceIdentifier &&
-              j.Identifier.check(prop.value.property)) {
-            
-            const propName = prop.value.property.name;
-            const transformed = transformNamespaceMember(propName);
-            
-            if (transformed) {
-              prop.value = transformed;
-              hasModifications = true;
-            }
-          }
-        });
+      // Handle t.TypeName.withConstraint
+      root.find(j.MemberExpression, {
+        object: {
+          type: 'MemberExpression',
+          object: { name: namespace },
+          property: { name: runtypeKey }
+        },
+        property: { name: 'withConstraint' }
+      }).forEach((path: any) => {
+        // Replace t.TypeName.withConstraint with z.typename().refine
+        path.value.object = j.callExpression(
+          j.memberExpression(
+            j.identifier('z'), 
+            j.identifier(typeMapping[runtypeKey])
+          ),
+          []
+        );
+        path.value.property = j.identifier('refine');
+        modified = true;
       });
+    });
+  });
+
+  // Fix properties inside objects with non-aliased types
+  root.find(j.Property).forEach((path: any) => {
+    if (path.value.value.type === 'Identifier') {
+      const valueName = path.value.value.name;
+      
+      if (['String', 'Number', 'Boolean'].includes(valueName) && !jsCastNodes.has(valueName)) {
+        // Replace with z.method()
+        const zodMethod = typeMapping[valueName].toLowerCase();
+        j(path).replaceWith(
+          j.property(
+            'init',
+            path.value.key,
+            j.callExpression(
+              j.memberExpression(j.identifier('z'), j.identifier(zodMethod)),
+              []
+            )
+          )
+        );
+        modified = true;
+      }
+    }
+  });
+
+  return modified;
+}
+
+/**
+ * Transforms a runtype argument to a zod schema
+ */
+function transformArgument(
+  j: any, 
+  arg: any, 
+  namespaces: string[], 
+  jsCastNodes: Set<string>
+): any {
+  if (!arg) return arg;
+  
+  // Map of runtypes to zod equivalents
+  const typeMapping: Record<string, string> = {
+    String: 'string',
+    Number: 'number',
+    Boolean: 'boolean',
+  };
+
+  // Handle direct identifiers (String, Number, Boolean)
+  if (arg.type === 'Identifier' && typeMapping[arg.name] && !jsCastNodes.has(arg.name)) {
+    return j.callExpression(
+      j.memberExpression(j.identifier('z'), j.identifier(typeMapping[arg.name])),
+      []
+    );
   }
   
-  // Add a post-processing step to catch any remaining namespace references
-  if (namespaceIdentifier) {
-    // Simple string replacement only for the final output
-    // We'll handle this when returning the output
-    hasModifications = true;
+  // Handle namespace references (t.String, t.Number, t.Boolean)
+  if (arg.type === 'MemberExpression' && 
+      arg.object.type === 'Identifier' && 
+      namespaces.includes(arg.object.name) && 
+      arg.property.type === 'Identifier' && 
+      typeMapping[arg.property.name]) {
+    return j.callExpression(
+      j.memberExpression(j.identifier('z'), j.identifier(typeMapping[arg.property.name])),
+      []
+    );
   }
 
-  // Add zod import if we made modifications and don't already have it
-  if (hasModifications && !hasZodImport) {
-    const zodImport = j.importDeclaration(
-      [j.importDefaultSpecifier(j.identifier('z'))],
-      j.literal('zod')
-    );
-    
-    // Add at the top of the file
-    const firstNode = root.find(j.Program).get('body', 0).node;
-    if (firstNode) {
-      root.find(j.Program).get('body', 0).insertBefore(zodImport);
-    } else {
-      root.find(j.Program).get('body').unshift(zodImport);
-    }
-  }
-  
-  if (hasModifications) {
-    let result = root.toSource({ quote: 'single' });
-    
-    // Final cleanup for any remaining namespace references
-    if (namespaceIdentifier) {
-      // First, replace any RT.z.string() patterns with z.string()
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.z\\.`, 'g'), 
-        'z.'
-      );
-      
-      // Replace t.Record({...}) with z.record({...})
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Record\\(`, 'g'),
-        'z.record('
-      );
-      
-      // Replace t.Dictionary(...) with z.record(...)
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Dictionary\\(`, 'g'),
-        'z.record('
-      );
-      
-      // Replace t.Object({...}) with z.object({...})
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Object\\(`, 'g'),
-        'z.object('
-      );
-      
-      // Replace t.Array(z.string()) with z.array(z.string())
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Array\\(`, 'g'),
-        'z.array('
-      );
-      
-      // Replace t.Tuple(...) with z.tuple([...])
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Tuple\\(([^)]*)\\)`, 'g'),
-        (match, args) => {
-          // This keeps the args but wraps them in an array for z.tuple([...])
-          return `z.tuple([${args}])`;
-        }
-      );
-            
-      // Replace t.Union(...) with z.union([...])
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Union\\(([^)]*)\\)`, 'g'),
-        (match, args) => {
-          return `z.union([${args}])`;
-        }
-      );
-      
-      // Replace t.Literal(...) with z.literal(...)
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Literal\\(`, 'g'),
-        'z.literal('
-      );
-      
-      // Replace t.Optional(X) with X.optional()
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Optional\\(([^)]*)\\)`, 'g'),
-        (match, arg) => {
-          return `${arg}.optional()`;
-        }
-      );
-      
-      // Fix broken .optional() syntax that might occur from other transformations
-      result = result.replace(/(\w+)\(\.optional\(\)\)/g, '$1().optional()');
-      
-      // Replace t.String with z.string()
-      // Use word boundaries to avoid matching substrings
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.String\\b`, 'g'),
-        'z.string()'
-      );
-      
-      // Replace t.Number with z.number()
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Number\\b`, 'g'),
-        'z.number()'
-      );
-      
-      // Replace t.Boolean with z.boolean()
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Boolean\\b`, 'g'),
-        'z.boolean()'
-      );
-      
-      // Replace t.Undefined with z.undefined()
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Undefined\\b`, 'g'),
-        'z.undefined()'
-      );
-      
-      // Replace t.Null with z.null()
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.Null\\b`, 'g'),
-        'z.null()'
-      );
-      
-      // Replace t.static<...> with z.infer<...>
-      result = result.replace(
-        new RegExp(`${namespaceIdentifier}\\.static\\b`, 'g'),
-        'z.infer'
-      );
-    }
-    
-    return result;
-  }
-  
-  return file.source;
+  return arg;
 }
+
+/**
+ * Transforms object properties from runtypes to zod
+ */
+function processObjectProperties(
+  j: any, 
+  obj: any, 
+  namespaces: string[], 
+  jsCastNodes: Set<string>
+): any[] {
+  const properties: any[] = [];
+  
+  // Map of runtypes to zod equivalents for primitive types
+  const typeMapping: Record<string, string> = {
+    String: 'string',
+    Number: 'number',
+    Boolean: 'boolean',
+  };
+  
+  obj.properties.forEach((prop: any) => {
+    let newValue;
+    
+    // Handle direct identifier primitives
+    if (prop.value.type === 'Identifier') {
+      const name = prop.value.name;
+      if (typeMapping[name] && !jsCastNodes.has(name)) {
+        newValue = j.callExpression(
+          j.memberExpression(j.identifier('z'), j.identifier(typeMapping[name])),
+          []
+        );
+      } else {
+        newValue = prop.value;  // Keep original for non-runtype identifiers
+      }
+    } 
+    // Handle namespace members (t.String)
+    else if (prop.value.type === 'MemberExpression' && 
+             prop.value.object.type === 'Identifier' && 
+             namespaces.includes(prop.value.object.name)) {
+      const typeName = prop.value.property.name;
+      if (typeMapping[typeName]) {
+        // Simple primitives: t.String -> z.string()
+        newValue = j.callExpression(
+          j.memberExpression(j.identifier('z'), j.identifier(typeMapping[typeName])),
+          []
+        );
+      } else {
+        // This will be handled by the more comprehensive transformation later
+        newValue = prop.value;
+      }
+    }
+    // Handle nested type calls like Array(String)
+    else if (prop.value.type === 'CallExpression') {
+      newValue = prop.value;  // Will be handled by the comprehensive transforms
+    }
+    // Handle Optional types specially
+    else if (
+      prop.value.type === 'CallExpression' && 
+      prop.value.callee.type === 'Identifier' && 
+      prop.value.callee.name === 'Optional'
+    ) {
+      // Optional(Type) -> transformed type.optional()
+      const innerType = transformArgument(j, prop.value.arguments[0], namespaces, jsCastNodes);
+      newValue = j.callExpression(
+        j.memberExpression(innerType, j.identifier('optional')),
+        []
+      );
+    }
+    // Handle t.Optional specially
+    else if (
+      prop.value.type === 'CallExpression' && 
+      prop.value.callee.type === 'MemberExpression' && 
+      prop.value.callee.object.type === 'Identifier' && 
+      namespaces.includes(prop.value.callee.object.name) && 
+      prop.value.callee.property.name === 'Optional'
+    ) {
+      // t.Optional(t.Type) -> z.type().optional()
+      const innerType = transformArgument(j, prop.value.arguments[0], namespaces, jsCastNodes);
+      newValue = j.callExpression(
+        j.memberExpression(innerType, j.identifier('optional')),
+        []
+      );
+    } else {
+      newValue = prop.value;  // Preserve original for anything else
+    }
+    
+    properties.push(j.property('init', prop.key, newValue));
+  });
+  
+  return properties;
+}
+
+/**
+ * Gets the variable name assigned to a validation result
+ */
+function getResultVariableName(callExpressionPath: any): string | null {
+  const parent = callExpressionPath.parent;
+  if (parent.value.type === 'VariableDeclarator') {
+    return parent.value.id.name;
+  }
+  
+  if (parent.value.type === 'AssignmentExpression') {
+    return parent.value.left.name;
+  }
+  
+  return null;
+}
+
+export default transform;

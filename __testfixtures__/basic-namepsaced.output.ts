@@ -29,3 +29,15 @@ const ConstrainedNumber = z.number().refine((n) => n > 0 || "Must be positive");
 
 // Dictionary type
 const DictionaryType = z.record(z.string(), z.number());
+
+// Using types for validation
+function validatePerson(data: unknown) {
+  const result = ObjectType.safeParse(data);
+  if (result.success) {
+    console.log("Valid person:", result.data);
+    return result.data;
+  } else {
+    console.error("Invalid person:", result.error);
+    return null;
+  }
+}

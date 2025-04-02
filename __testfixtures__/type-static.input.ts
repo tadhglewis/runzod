@@ -1,4 +1,4 @@
-import * as t from 'runtypes'
+import * as t from "runtypes";
 
-export const Test = t.Record({})
-export type Test = t.static<typeof Test>
+export const Test = t.Object({ a: t.String });
+export type Test = t.Static<typeof Test>;

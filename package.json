@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@types/jscodeshift": "^17.3.0",
+    "glob": "^11.0.1",
     "runtypes": "^7.0.4",
     "typescript": "^5.8.2",
     "vitest": "^3.1.1",

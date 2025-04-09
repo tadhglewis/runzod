@@ -466,6 +466,9 @@ describe("specific transformations", () => {
     );
 
     expect(normalizedOutput).not.toContain("z.boolean()(");
+    
+    // Array should not be transformed because it was not imported from runtypes
+    expect(normalizedOutput).not.toContain("z.array(5).keys()");
   });
 
   test("correctly handles Symbol usage", () => {

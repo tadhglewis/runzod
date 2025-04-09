@@ -37,5 +37,3 @@ function validateData(data: any) {
 
 // do not modify Javascript built-in array prototype
 const array = Array(5).keys()
-
-const string = String('asdf')

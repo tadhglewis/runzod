@@ -60,6 +60,9 @@ function transformer(file: FileInfo, api: API, options: Options) {
   const j = api.jscodeshift.withParser("tsx");
   const root = j(file.source);
 
+  // we need to track the imported runtypes that clash with JS builtins
+  const importedRuntypesBuiltins = new Set<string>();
+
   let hasModifications = false;
   let needsZodImport = false;
   let namespacePrefix: string | null = null;
@@ -108,6 +111,17 @@ function transformer(file: FileInfo, api: API, options: Options) {
       .forEach((path) => {
         hasModifications = true;
         needsZodImport = true;
+
+        if (path.node.specifiers) {
+          path.node.specifiers.forEach((specifier) => {
+            if (j.ImportSpecifier.check(specifier)) {
+              if (j.Identifier.check(specifier.imported)) {
+                // track builtins like Array, String, Number to see if they were imported via runtypes
+                importedRuntypesBuiltins.add(specifier.imported.name);
+              }
+            }
+          });
+        }
 
         if (path.node.specifiers) {
           path.node.specifiers.forEach((specifier) => {
@@ -339,6 +353,8 @@ function transformer(file: FileInfo, api: API, options: Options) {
    * Transforms Array call expressions
    */
   function transformArrayCall(path: ASTPath<CallExpression>) {
+    if (!importedRuntypesBuiltins.has("Array")) return;
+
     if (
       path.node.arguments.length > 0 &&
       j.Identifier.check(path.node.arguments[0])

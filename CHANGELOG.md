@@ -1,5 +1,11 @@
 # runzod
 
+## 2.1.4
+
+### Patch Changes
+
+- 8d04f66: Fix JS array builtin transformation
+
 ## 2.1.3
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "runzod",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Codemod to migrate from runtypes to zod",
   "main": "dist/index.js",
   "bin": {

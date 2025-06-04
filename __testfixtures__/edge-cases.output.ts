@@ -37,3 +37,6 @@ function validateData(data: any) {
   }
   return false;
 }
+
+// do not modify Javascript built-in array prototype
+const array = Array(5).keys()

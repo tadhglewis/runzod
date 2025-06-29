@@ -224,6 +224,7 @@ function transformer(file: FileInfo, api: API, options: Options) {
     }
 
     // Skip if this is a function call with built-in name (Boolean(), String(), etc.)
+    // This covers JavaScript builtin function calls like Boolean(value)
     if (
       j.CallExpression.check(path.parent.node) &&
       path.parent.node.callee === path.node &&
@@ -274,6 +275,14 @@ function transformer(file: FileInfo, api: API, options: Options) {
    * Replaces an identifier with its corresponding zod type
    */
   function replaceWithZodType(path: ASTPath<Identifier>, typeName: string) {
+    // Additional check: if this is a function call, it should stay as JS builtin
+    if (
+      j.CallExpression.check(path.parent.node) &&
+      path.parent.node.callee === path.node
+    ) {
+      return; // Don't transform function calls like Boolean(value)
+    }
+
     if (typeName === "String") {
       j(path).replaceWith(
         j.callExpression(
@@ -318,7 +327,20 @@ function transformer(file: FileInfo, api: API, options: Options) {
       .filter((path: ASTPath<CallExpression>) => {
         const callee = path.node.callee;
         if (j.Identifier.check(callee)) {
-          return Object.keys(typeMapping).includes(callee.name);
+          const typeName = callee.name;
+          
+          // Skip if this is a JavaScript builtin function call
+          if (
+            ["Boolean", "String", "Number", "Symbol"].includes(typeName) &&
+            ((callee as any).__jsBuiltin ||
+             !importedRuntypesBuiltins.has(typeName) ||
+             // For imported runtypes builtins used as function calls, still skip
+             path.node.arguments.length > 0)
+          ) {
+            return false;
+          }
+          
+          return Object.keys(typeMapping).includes(typeName);
         }
         return false;
       })
@@ -678,9 +700,9 @@ function transformer(file: FileInfo, api: API, options: Options) {
     if (!namespacePrefix) return;
 
     transformNamespaceCallExpressions();
+    transformNamespaceMethodCalls(); // Run before member expressions
     transformNamespaceMemberExpressions();
     transformNamespaceStaticTypes();
-    transformNamespaceMethodCalls();
   }
 
   /**
@@ -898,22 +920,17 @@ function transformer(file: FileInfo, api: API, options: Options) {
   function transformNamespaceStaticTypes() {
     root.find(j.TSTypeReference).forEach((path: ASTPath<TSTypeReference>) => {
       if (
-        path.node.typeName &&
-        typeof path.node.typeName === "object" &&
-        "object" in path.node.typeName &&
-        "property" in path.node.typeName &&
-        path.node.typeName.object &&
-        path.node.typeName.property &&
-        j.Identifier.check(path.node.typeName.object) &&
-        (path.node.typeName.object as Identifier).name === namespacePrefix &&
-        j.Identifier.check(path.node.typeName.property) &&
-        (path.node.typeName.property as Identifier).name === "Static"
+        j.TSQualifiedName.check(path.node.typeName) &&
+        j.Identifier.check(path.node.typeName.left) &&
+        path.node.typeName.left.name === namespacePrefix &&
+        j.Identifier.check(path.node.typeName.right) &&
+        path.node.typeName.right.name === "Static"
       ) {
         hasModifications = true;
-        path.node.typeName = j.memberExpression(
+        path.node.typeName = j.tsQualifiedName(
           j.identifier("z"),
           j.identifier("infer")
-        ) as any;
+        );
       }
     });
   }
@@ -934,7 +951,7 @@ function transformer(file: FileInfo, api: API, options: Options) {
             (path.node.object.property as Identifier).name
           ) &&
           j.Identifier.check(path.node.property) &&
-          ["check", "guard", "parse"].includes(
+          ["check", "guard", "parse", "safeParse"].includes(
             (path.node.property as Identifier).name
           )
         );
@@ -966,21 +983,30 @@ function transformer(file: FileInfo, api: API, options: Options) {
         ) {
           const mappedType = typeMapping[typeName];
           if (mappedType) {
-            const newMethod = methodName === "guard" ? "safeParse" : "parse";
+            let newMethod = methodName;
+            if (methodName === "guard") {
+              newMethod = "safeParse";
+            } else if (methodName === "check") {
+              newMethod = "parse";
+            }
+            // If methodName is "safeParse", keep it as "safeParse"
 
             const baseExpr = j.memberExpression(
               parseZodExpression(mappedType),
               j.identifier(newMethod)
             );
 
-            if (isInIfCondition) {
-              const callExpr = path.parent.node as CallExpression;
-              j(path.parent).replaceWith(
-                j.memberExpression(
-                  j.callExpression(baseExpr, callExpr.arguments),
-                  j.identifier("success")
-                )
-              );
+            if (methodName === "guard" || methodName === "safeParse") {
+              // Add .success for guard methods and safeParse that came from guard
+              const callExpr = path.parent?.node as CallExpression;
+              if (callExpr && j.CallExpression.check(callExpr)) {
+                j(path.parent).replaceWith(
+                  j.memberExpression(
+                    j.callExpression(baseExpr, callExpr.arguments),
+                    j.identifier("success")
+                  )
+                );
+              }
             } else {
               j(path).replaceWith(baseExpr);
             }
@@ -1003,10 +1029,16 @@ function transformer(file: FileInfo, api: API, options: Options) {
           ["check", "guard", "parse"].includes(
             (path.node.property as Identifier).name
           ) &&
+          // Skip if this is a namespace-prefixed call that should be handled by transformNamespaceMethodCalls
           (!namespacePrefix ||
             !j.MemberExpression.check(path.node.object) ||
             !j.Identifier.check(path.node.object.object) ||
-            (path.node.object.object as Identifier).name !== namespacePrefix)
+            (path.node.object.object as Identifier).name !== namespacePrefix) &&
+          // Skip if this is already a zod call (z.type().method)
+          !(j.CallExpression.check(path.node.object) &&
+            j.MemberExpression.check(path.node.object.callee) &&
+            j.Identifier.check(path.node.object.callee.object) &&
+            path.node.object.callee.object.name === "z")
         );
       })
       .forEach((path: ASTPath<MemberExpression>) => {
@@ -1019,6 +1051,30 @@ function transformer(file: FileInfo, api: API, options: Options) {
           (path.node.property as Identifier).name = "safeParse";
           transformGuardToSafeParse(path);
           hasModifications = true;
+        } else if (methodName === "safeParse") {
+          // Handle cases where guard was already transformed to safeParse but needs .success
+          if (
+            j.CallExpression.check(path.node.object) &&
+            j.MemberExpression.check(path.node.object.callee) &&
+            j.Identifier.check(path.node.object.callee.object) &&
+            path.node.object.callee.object.name === "z"
+          ) {
+            // This is a z.type().safeParse() call that should have .success
+            const parent = path.parent;
+            if (parent && j.CallExpression.check(parent.node)) {
+              const callExpr = parent.node as CallExpression;
+              j(parent).replaceWith(
+                j.memberExpression(
+                  j.callExpression(
+                    j.memberExpression(path.node.object, j.identifier("safeParse")),
+                    callExpr.arguments
+                  ),
+                  j.identifier("success")
+                )
+              );
+              hasModifications = true;
+            }
+          }
         }
       });
   }

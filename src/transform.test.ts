@@ -93,7 +93,7 @@ describe("runtypes to zod transform", () => {
 describe("specific transformations", () => {
   test("transforms runtypes imports to zod", () => {
     const source = `import { String, Number } from "runtypes";`;
-    const expected = `import { z } from "zod";`;
+    const expected = `import { z } from "zod/v4";`;
 
     let output = transform(
       { source, path: "test.ts" },
@@ -121,7 +121,7 @@ describe("specific transformations", () => {
     `;
 
     const expected = `
-      import { z } from "zod";
+      import { z } from "zod/v4";
       const User = z.object({ name: z.string() });
       type User = z.infer<typeof User>;
     `;
@@ -154,7 +154,7 @@ describe("specific transformations", () => {
     `;
 
     const expected = `
-      import { z } from "zod";
+      import { z } from "zod/v4";
       const Email = z.string().refine(email => /\\S+@\\S+\\.\\S+/.test(email), "Invalid email");
     `;
 
@@ -193,7 +193,7 @@ describe("specific transformations", () => {
     `;
 
     const expected = `
-      import { z } from "zod";
+      import { z } from "zod/v4";
       const User = z.object({ name: z.string() });
       
       function process(data: unknown) {
@@ -262,7 +262,7 @@ describe("specific transformations", () => {
         "if ($1.safeParse($2).success)"
       );
 
-    expect(output).toContain('import { z } from "zod"');
+    expect(output).toContain('import { z } from "zod/v4"');
     expect(output).toContain("z.object");
     expect(output).toContain("z.string()");
     expect(output).toContain("z.number()");
@@ -435,10 +435,10 @@ describe("specific transformations", () => {
 
     expect(normalizedOutput).toContain("active: z.boolean()");
 
-    expect(normalizedOutput).toContain("return Boolean(obj[prop])");
+    expect(normalizedOutput).toContain("return Boolean( obj[prop] )");
     expect(normalizedOutput).not.toContain("return z.boolean()");
 
-    expect(normalizedOutput).toContain("Boolean(data.id && data.name)");
+    expect(normalizedOutput).toContain("Boolean( data.id && data.name )");
     expect(normalizedOutput).not.toContain("z.boolean()(data.id");
   });
 

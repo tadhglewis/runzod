@@ -53,6 +53,8 @@ const methodMapping: Record<string, string> = {
   omit: "omit",
   extend: "extend",
   exact: "strict",
+  strict: "",
+  passthrough: "",
   or: "",
 };
 
@@ -201,10 +203,14 @@ function transformer(file: FileInfo, api: API, options: Options) {
    * Determines if an identifier should be skipped during transformation
    */
   function shouldSkipIdentifier(path: ASTPath<Identifier>) {
+    const typeName = path.node.name;
+    
+    // Skip import specifiers
     if (j.ImportSpecifier.check(path.parent.node)) {
       return true;
     }
 
+    // Skip if this is the object part of a member expression (e.g., String.prototype)
     if (
       j.MemberExpression.check(path.parent.node) &&
       path.parent.node.object === path.node
@@ -212,21 +218,51 @@ function transformer(file: FileInfo, api: API, options: Options) {
       return true;
     }
 
+    // Skip if already marked as JS builtin
     if ((path.node as any).__jsBuiltin) {
       return true;
     }
 
+    // Skip if this is a function call with built-in name (Boolean(), String(), etc.)
     if (
       j.CallExpression.check(path.parent.node) &&
       path.parent.node.callee === path.node &&
-      ["Boolean", "String", "Number", "Symbol"].includes(path.node.name)
+      ["Boolean", "String", "Number", "Symbol"].includes(typeName)
     ) {
       return true;
     }
 
+    // For namespace imports, check if this is used as a standalone builtin
+    if (namespacePrefix && ["Boolean", "String", "Number", "Symbol"].includes(typeName)) {
+      // Skip if it's NOT prefixed with the namespace (e.g., Boolean vs t.Boolean)
+      const parent = path.parent;
+      if (
+        !j.MemberExpression.check(parent.node) ||
+        parent.node.property !== path.node ||
+        !j.Identifier.check(parent.node.object) ||
+        parent.node.object.name !== namespacePrefix
+      ) {
+        return true; // This is a standalone Boolean/String/etc, not t.Boolean
+      }
+    }
+
+    // For non-namespace imports, skip if this builtin was NOT imported from runtypes
+    if (
+      !namespacePrefix &&
+      ["Boolean", "String", "Number", "Symbol"].includes(typeName) &&
+      !importedRuntypesBuiltins.has(typeName)
+    ) {
+      return true;
+    }
+
+    // Skip filter function arguments that are built-ins
     if (
       j.CallExpression.check(path.parent.node) &&
-      path.parent.node.callee === path.node
+      j.MemberExpression.check(path.parent.node.callee) &&
+      j.Identifier.check(path.parent.node.callee.property) &&
+      path.parent.node.callee.property.name === "filter" &&
+      path.parent.node.arguments.includes(path.node) &&
+      ["Boolean", "String", "Number", "Symbol"].includes(typeName)
     ) {
       return true;
     }
@@ -509,6 +545,10 @@ function transformer(file: FileInfo, api: API, options: Options) {
           transformWithConstraintMethod(path);
         } else if (methodName === "pick" || methodName === "omit") {
           transformPickOmitMethod(path, methodName);
+        } else if (methodName === "strict") {
+          transformStrictMethod(path, callee);
+        } else if (methodName === "passthrough") {
+          transformPassthroughMethod(path, callee);
         }
       });
   }
@@ -577,6 +617,40 @@ function transformer(file: FileInfo, api: API, options: Options) {
 
       path.node.arguments = [j.objectExpression(properties)];
     }
+  }
+
+  /**
+   * Transforms .strict() method calls to z.strictObject()
+   */
+  function transformStrictMethod(
+    path: ASTPath<CallExpression>,
+    callee: MemberExpression
+  ) {
+    const object = callee.object;
+    j(path).replaceWith(
+      j.callExpression(
+        j.memberExpression(j.identifier("z"), j.identifier("strictObject")),
+        [object]
+      )
+    );
+    hasModifications = true;
+  }
+
+  /**
+   * Transforms .passthrough() method calls to z.looseObject()
+   */
+  function transformPassthroughMethod(
+    path: ASTPath<CallExpression>,
+    callee: MemberExpression
+  ) {
+    const object = callee.object;
+    j(path).replaceWith(
+      j.callExpression(
+        j.memberExpression(j.identifier("z"), j.identifier("looseObject")),
+        [object]
+      )
+    );
+    hasModifications = true;
   }
 
   /**
@@ -957,10 +1031,22 @@ function transformer(file: FileInfo, api: API, options: Options) {
     if (parent && j.CallExpression.check(parent.node) && parent.parent) {
       const callExpr = parent.node as CallExpression;
 
+      // Check if this is used in an if condition
       if (
         j.IfStatement.check(parent.parent.node) &&
         (parent.parent.node as IfStatement).test === callExpr
       ) {
+        j(parent).replaceWith(
+          j.memberExpression(
+            j.callExpression(
+              j.memberExpression(path.node.object, j.identifier("safeParse")),
+              callExpr.arguments
+            ),
+            j.identifier("success")
+          )
+        );
+      } else {
+        // For other contexts, still transform but let user handle the result
         j(parent).replaceWith(
           j.memberExpression(
             j.callExpression(
@@ -981,102 +1067,13 @@ function transformer(file: FileInfo, api: API, options: Options) {
     if (needsZodImport) {
       const zodImport = j.importDeclaration(
         [j.importSpecifier(j.identifier("z"))],
-        j.literal("zod")
+        j.literal("zod/v4")
       );
 
       root.get().node.program.body.unshift(zodImport);
     }
   }
 
-  /**
-   * Post-processes source to fix any remaining issues
-   */
-  function postProcessSource(source: string) {
-    if (namespacePrefix) {
-      source = source
-        .replace(
-          new RegExp(`${namespacePrefix}\\.z\\.([a-zA-Z]+)(\\(\\))`, "g"),
-          "z.$1$2"
-        )
-        .replace(new RegExp(`${namespacePrefix}\\.Static`, "g"), "z.infer")
-        .replace(
-          new RegExp(
-            `${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\.guard\\(([^)]+)\\)`,
-            "g"
-          ),
-          (match, type, arg) => {
-            const lowerType = type.toLowerCase();
-            return `z.${lowerType}().safeParse(${arg}).success`;
-          }
-        )
-        .replace(
-          new RegExp(
-            `${namespacePrefix}\\.Array\\(${namespacePrefix}\\.([A-Z][a-zA-Z]*)\\)`,
-            "g"
-          ),
-          (match, type) => {
-            const lowerType = type.toLowerCase();
-            return `z.array(z.${lowerType}())`;
-          }
-        )
-        .replace(
-          /return\s+z\.([a-zA-Z]+)\(\)\.safeParse\((.*?)\);/g,
-          "return z.$1().safeParse($2).success;"
-        );
-    }
-
-    source = source
-      .replace(/z\.boolean\(\)\((.*?)\)/g, "Boolean($1)")
-      .replace(/z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Boolean($1)")
-      .replace(
-        /if\s*\((.*?)&&\s*z\.boolean\(\)\((.*?)\)/g,
-        "if ($1&& Boolean($2)"
-      )
-      .replace(
-        /if\s*\((.*?)&&\s*z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g,
-        "if ($1&& Boolean($2)"
-      )
-      .replace(
-        /return\s+(.*?)&&\s*z\.boolean\(\)\((.*?)\)/g,
-        "return $1&& Boolean($2)"
-      )
-      .replace(
-        /return\s+(.*?)&&\s*z\.boolean\(\)\s*\(\s*([\s\S]*?)\s*\)/g,
-        "return $1&& Boolean($2)"
-      );
-
-    source = source
-      .replace(/z\.string\(\)\((.*?)\)/g, "String($1)")
-      .replace(/z\.string\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "String($1)");
-
-    source = source
-      .replace(/z\.number\(\)\((.*?)\)/g, "Number($1)")
-      .replace(/z\.number\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Number($1)");
-
-    source = source
-      .replace(/z\.symbol\(\)\((.*?)\)/g, "Symbol($1)")
-      .replace(/z\.symbol\(\)\s*\(\s*([\s\S]*?)\s*\)/g, "Symbol($1)")
-      .replace(
-        /\bconst\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g,
-        "const $1 = Symbol($2)"
-      )
-      .replace(
-        /\blet\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g,
-        "let $1 = Symbol($2)"
-      )
-      .replace(
-        /\bvar\s+([A-Za-z0-9_]+)\s*=\s*z\.symbol\(([^)]+)\)/g,
-        "var $1 = Symbol($2)"
-      )
-      .replace(/\breturn\s+z\.symbol\(([^)]+)\)/g, "return Symbol($1)");
-
-    source = source.replace(
-      /\.filter\s*\(\s*z\.boolean\(\)\s*\)/g,
-      ".filter(Boolean)"
-    );
-
-    return source;
-  }
 
   processImports();
   markJsBuiltins();
@@ -1088,10 +1085,7 @@ function transformer(file: FileInfo, api: API, options: Options) {
   transformValidationMethods();
   addZodImport();
 
-  let transformedSource = hasModifications ? root.toSource() : file.source;
-  transformedSource = postProcessSource(transformedSource);
-
-  return transformedSource;
+  return hasModifications ? root.toSource() : file.source;
 }
 
 export default transformer;
